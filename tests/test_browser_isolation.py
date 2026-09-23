@@ -252,7 +252,61 @@ class TestBrowserModuleState:
 
         assert browser_mod._launch_browser_with_fallback(fake_pw, engine="webkit") == "webkit-browser"
 
-        assert launch_calls == [("webkit", {"headless": True})]
+        assert len(launch_calls) == 1
+        name, kwargs = launch_calls[0]
+        assert name == "webkit"
+        assert kwargs["headless"] is True
+        # The AppImage LD_LIBRARY_PATH scrub rides every engine launch.
+        assert "env" in kwargs and isinstance(kwargs["env"], dict)
+
+
+class TestBrowserEnv:
+    """_browser_env strips only AppImage-bundled LD_LIBRARY_PATH entries."""
+
+    def test_strips_appimage_libdir_keeps_real(self, monkeypatch):
+        monkeypatch.setenv("APPDIR", "/tmp/.mount_XxYy")
+        monkeypatch.setenv(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_XxYy/usr/lib/ouroboros/_internal:/opt/site/lib",
+        )
+        env = browser_mod._browser_env()
+        assert env["LD_LIBRARY_PATH"] == "/opt/site/lib"
+
+    def test_drops_var_when_only_bundled(self, monkeypatch):
+        monkeypatch.setenv("APPDIR", "/tmp/.mount_XxYy")
+        monkeypatch.setenv(
+            "LD_LIBRARY_PATH", "/tmp/.mount_XxYy/usr/lib/ouroboros/_internal"
+        )
+        assert "LD_LIBRARY_PATH" not in browser_mod._browser_env()
+
+    def test_preserves_playwright_vars(self, monkeypatch):
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+        assert browser_mod._browser_env()["PLAYWRIGHT_BROWSERS_PATH"] == "0"
+
+    def test_strips_mount_entry_without_appdir(self, monkeypatch):
+        monkeypatch.delenv("APPDIR", raising=False)
+        monkeypatch.setenv(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_AbCd/usr/lib:/opt/site/lib",
+        )
+        env = browser_mod._browser_env()
+        assert env["LD_LIBRARY_PATH"] == "/opt/site/lib"
+
+    def test_launch_passes_scrubbed_env(self, monkeypatch):
+        monkeypatch.setenv("APPDIR", "/tmp/.mount_XxYy")
+        monkeypatch.setenv(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_XxYy/usr/lib/ouroboros/_internal:/opt/site/lib",
+        )
+        launch_calls = []
+        fake_pw = types.SimpleNamespace(
+            chromium=types.SimpleNamespace(
+                launch=lambda **kwargs: launch_calls.append(kwargs) or "browser"
+            ),
+        )
+        assert browser_mod._launch_browser_with_fallback(fake_pw) == "browser"
+        assert launch_calls[0]["env"]["LD_LIBRARY_PATH"] == "/opt/site/lib"
 
 
 class TestHasPlatformChromium:

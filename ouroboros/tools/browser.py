@@ -290,10 +290,45 @@ def _maybe_alias_playwright_binary(exc: Exception) -> bool:
         return False
 
 
+def _browser_env() -> Dict[str, str]:
+    """Environment for the browser subprocess, minus the AppImage library path.
+
+    The AppImage exports LD_LIBRARY_PATH=$APPDIR/usr/lib/ouroboros/_internal and every
+    child inherits it — including Playwright's browser. Chromium then resolves NSS
+    against the bundle's Ubuntu libnssutil3 while NSS dlopens the HOST
+    /usr/lib/libsoftokn3.so by absolute path; the host softoken wants NSSUTIL_3.108 and
+    the bundled one stops at NSSUTIL_3.94, so NSS init fails and Chromium takes
+    FATAL:crypto/nss_util.cc -> IMMEDIATE_CRASH (SIGTRAP) on the first HTTPS navigation.
+    Playwright's browsers are self-contained, so the bundle's lib dir is only ever
+    harmful to them. Non-bundled entries are preserved for non-AppImage installs.
+    """
+    env = dict(os.environ)
+    raw = env.get("LD_LIBRARY_PATH") or ""
+    if not raw:
+        return env
+    appdir = str(env.get("APPDIR") or "").strip().rstrip(os.sep)
+
+    def _bundled(entry: str) -> bool:
+        if not entry:
+            return True
+        if appdir and (entry == appdir or entry.startswith(appdir + os.sep)):
+            return True
+        return "/.mount_" in entry  # AppImage mount even when APPDIR is unset
+
+    kept = [p for p in raw.split(os.pathsep) if not _bundled(p)]
+    if kept:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(kept)
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def _launch_browser_with_fallback(pw_instance: Any, *, engine: str = "chromium", allow_cache_write: bool = True) -> Any:
     engine = _normalize_browser_engine(engine)
     launch_kwargs = {
         "headless": True,
+        # Never hand the AppImage's bundled Ubuntu libs to the browser; see _browser_env.
+        "env": _browser_env(),
     }
     if engine == "chromium":
         launch_kwargs["args"] = [

@@ -293,6 +293,23 @@ def _create_rescue_snapshot(branch: str, reason: str,
     return info
 
 
+def _merge_head_stderr_significant(err: Any) -> bool:
+    """True when MERGE_HEAD probe stderr carries a genuine diagnostic.
+
+    Host git may print benign warnings (e.g. AppImage libpcre2 "no version
+    information available") on every invocation, including a clean
+    no-merge-head probe (rc=1, empty stdout). Those lines must not falsify
+    merge-head absence; any other stderr content still counts as a failed
+    probe (unknown, not proof of absence).
+    """
+    text = err if isinstance(err, str) else (str(err) if err else "")
+    kept = [
+        ln for ln in text.splitlines()
+        if ln.strip() and "no version information available" not in ln
+    ]
+    return bool("".join(kept).strip())
+
+
 def _link_rescue_to_evolution_transaction(rescue_info: Dict[str, Any], reason: str) -> None:
     """Attach rescue recovery pointers to the active evolution transaction."""
     try:
@@ -343,7 +360,12 @@ def rescue_before_destructive_rollback(reason: str, *, context: str = "rollback"
             ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"]
         )
         merge_in_progress = rc_mh == 0 and bool(merge_head.strip())
-        merge_absent = rc_mh == 1 and not merge_head_error.strip()
+        # Absence is rc==1 with no GENUINE stderr diagnostic. Benign host
+        # warnings (libpcre2 skew) are filtered by the helper; any other
+        # stderr keeps the probe unknown so a failed probe still rescues
+        # instead of false-cleaning (P2: stderr must not falsify absence,
+        # but a real diagnostic must not be silenced either).
+        merge_absent = rc_mh == 1 and not _merge_head_stderr_significant(merge_head_error)
         if rc_status == 0 and not dirty.strip() and merge_absent:
             return {}
         repo_state = _go()._collect_repo_sync_state()

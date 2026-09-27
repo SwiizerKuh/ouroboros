@@ -445,31 +445,45 @@ def test_task_scope_reaped_when_owner_task_gone(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="lifeline is POSIX-only")
 def test_lifeline_kills_child_when_parent_dies(tmp_path):
-    # Parent spawns a child that starts the lifeline, then the parent exits.
+    # The parent stays alive until the child signals the lifeline is ARMED,
+    # then exits: the lifeline must be installed while the parent lives, or
+    # a slow child startup lets the parent die first and the orphan is
+    # adopted (ppid never changes again, so the watch has nothing to see).
+    # That startup race is not what this test asserts — the assertion is that
+    # a watched parent's death kills the child.
+    armed_file = tmp_path / "lifeline_armed"
     child_src = (
-        "import sys; sys.path.insert(0, %r);"
+        "import sys, pathlib; sys.path.insert(0, %r);"
         "from ouroboros.process_custody import start_parent_lifeline;"
         "start_parent_lifeline(poll_sec=0.2, label='test');"
+        "pathlib.Path(%r).write_text('armed');"
         "import time; time.sleep(60)"
-    ) % str(REPO_ROOT)
+    ) % (str(REPO_ROOT), str(armed_file))
     parent_src = (
-        "import subprocess, sys, pathlib;"
-        f"child = subprocess.Popen([sys.executable, '-c', {child_src!r}]);"
-        "pathlib.Path(sys.argv[1]).write_text(str(child.pid));"
+        "import subprocess, sys, pathlib, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_src!r}])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "deadline = time.time() + 15\n"
+        "while time.time() < deadline:\n"
+        "    if pathlib.Path(sys.argv[2]).exists(): break\n"
+        "    time.sleep(0.05)\n"
     )
     pid_file = tmp_path / "child_pid"
     subprocess.run(
-        [sys.executable, "-c", parent_src, str(pid_file)],
-        check=True, timeout=15,
+        [sys.executable, "-c", parent_src, str(pid_file), str(armed_file)],
+        check=True, timeout=30,
     )
     child_pid = int(pid_file.read_text())
     deadline = time.time() + 10
     while time.time() < deadline:
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
+        # Zombie-aware: a lifeline-killed child reparented to init may sit as
+        # an unreaped zombie, which still answers os.kill(pid, 0) — that is
+        # death, not survival. _process_gone reads ps stat for the Z state.
+        if _process_gone(child_pid):
             return  # lifeline fired
         time.sleep(0.2)
+    if _process_gone(child_pid):
+        return  # lifeline fired between the last poll and the deadline
     try:
         os.kill(child_pid, 9)
     except ProcessLookupError:

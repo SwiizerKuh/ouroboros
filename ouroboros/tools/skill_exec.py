@@ -308,10 +308,16 @@ def _deno_permission_args(ctx: ToolContext, permissions: List[str], state_dir: p
 
     # Script fs declares writes outside state; ordinary reads need no new
     # grant. Env authority is only the names actually passed after grants.
+    # NOTE: Deno 2.x offers no comma escape in --allow-env/--allow-write
+    # values — a doubled comma is rejected ("Empty path is not allowed") and a
+    # plain comma SPLITS the value, so comma-doubling converts a working path
+    # into a hard error on every reachable deno. Pass values through verbatim:
+    # a real comma path then under-grants honestly (NotCapable) instead of
+    # erroring, and comma-free paths (the only kind in practice) work.
     flags = ["run", "--no-prompt", "--allow-read"]
     if env:
-        flags.append("--allow-env=" + ",".join(key.replace(",", ",,") for key in sorted(env)))
-    state_arg = str(state_dir).replace(",", ",,")
+        flags.append("--allow-env=" + ",".join(sorted(env)))
+    state_arg = str(state_dir)
     flags.append("--allow-write" if "fs" in permissions else f"--allow-write={state_arg}")
     if "net" in permissions and _resource_allowed(ctx, "network"):
         flags.append("--allow-net")

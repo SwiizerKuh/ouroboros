@@ -99,6 +99,10 @@ def _installer_env(env_root: pathlib.Path, *, ecosystem: str = "", cache_root: p
         from ouroboros.platform_layer import prepend_skill_node_emergency_path
 
         prepend_skill_node_emergency_path(env)
+        # Readiness checks and build steps resolve `node` through this same
+        # env: when PATH's node is a shim broken by the scrubbed HOME, the
+        # real install dir goes first (no-op on a healthy PATH).
+        _prepend_real_node_install_dir(env)
     return env
 
 
@@ -197,6 +201,129 @@ def _install_python_packages(packages: List[str], env_root: pathlib.Path, timeou
     return [result]
 
 
+def _mise_version_key(name: str):
+    """Dotted-numeric sort key for a version directory name; None when unparseable."""
+    parts = []
+    for piece in name.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            return None
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def _through_shim_to_installs(node_bin: str) -> List[str]:
+    """Real install bin dirs behind a mise-shim node, newest first; [] otherwise.
+
+    A version-manager shim (``<root>/shims/node``) breaks under the scrubbed
+    installer HOME, while the real installs behind it
+    (``<root>/installs/node/<ver>/bin``) keep working. Non-shim nodes yield
+    no candidates — their own sibling dir is the answer, handled by callers.
+    """
+    node_path = pathlib.Path(node_bin)
+    if node_path.parent.name != "shims":
+        return []
+    installs = node_path.parent.parent / "installs" / "node"
+    try:
+        versions = [d for d in installs.iterdir() if d.is_dir()]
+    except OSError:
+        return []
+    numbered = sorted(
+        ((k, v) for v in versions for k in [_mise_version_key(v.name)] if k is not None),
+        key=lambda kv: kv[0],
+        reverse=True,
+    )
+    others = [v for v in versions if _mise_version_key(v.name) is None]
+    return [str(v / "bin") for _, v in numbered] + [str(v / "bin") for v in others]
+
+
+def _prepend_real_node_install_dir(env: Dict[str, str]) -> None:
+    """Prepend the real node install dir when PATH's node is a shim.
+
+    The scrubbed installer HOME breaks version-manager shims; when the PATH
+    node is a mise shim with real installs behind it, the newest install bin
+    dir goes first so `node`/`npm` resolve to working runtimes. No-op when
+    PATH has no node, when it is not a shim, or when no installs exist —
+    the healthy-PATH case stays byte-identical.
+
+    Scans the env PATH entries directly instead of `shutil.which`: tests
+    stub `which` with a one-argument fake, and first-match-wins over the
+    entries is the whole of the contract needed here.
+    """
+    raw = env.get("PATH", "")
+    if not raw:
+        return
+    path_node = None
+    for entry in raw.split(os.pathsep):
+        if not entry:
+            continue
+        candidate = pathlib.Path(entry) / "node"
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                path_node = str(candidate)
+                break
+        except OSError:
+            continue
+    if not path_node:
+        return
+    for bin_dir in _through_shim_to_installs(path_node):
+        entries = raw.split(os.pathsep)
+        if bin_dir not in entries:
+            env["PATH"] = bin_dir + os.pathsep + raw
+        return  # only the newest install dir; the rest stay fallback candidates
+
+
+def _npm_beside_selected_node() -> str | None:
+    """npm living beside a known-good node runtime, if executable.
+
+    The bundled node ships no npm, and version-manager shims (mise) fail
+    under the scrubbed installer env, so neither the selected node's sibling
+    nor PATH lookup alone is reliable. Candidates, in order: the sibling of
+    the health-selected node; the sibling of the PATH node; and — when that
+    PATH node is a shim — the through-lookup into the mise
+    ``<root>/installs/node/<ver>/bin/npm`` layout (newest version first).
+    Shim paths are never returned. The caller falls back to PATH lookup when
+    nothing here is usable.
+    """
+    try:
+        from ouroboros.node_runtime import select_skill_node_runtime
+    except Exception:
+        select_skill_node_runtime = None  # type: ignore[assignment]
+    suffix = "npm.cmd" if os.name == "nt" else "npm"
+    node_bins: List[str] = []
+    if select_skill_node_runtime is not None:
+        try:
+            node_bin, _provenance = select_skill_node_runtime()
+        except Exception:
+            node_bin = ""
+        if node_bin:
+            node_bins.append(node_bin)
+    try:
+        path_node = shutil.which("node")
+    except Exception:
+        path_node = None
+    if path_node and path_node not in node_bins:
+        node_bins.append(path_node)
+    candidates: List[str] = []
+    for bin_path in node_bins:
+        node_path = pathlib.Path(bin_path)
+        # A real install: npm ships in the same bin dir as its node.
+        candidates.append(str(node_path.parent / suffix))
+        # A shim's sibling is another shim — see through to the real installs.
+        for bin_dir in _through_shim_to_installs(bin_path):
+            candidates.append(str(pathlib.Path(bin_dir) / suffix))
+    for cand in candidates:
+        # Never return another shim: it fails the same way the node shim does.
+        if "shims" in pathlib.Path(cand).parts:
+            continue
+        try:
+            if pathlib.Path(cand).is_file() and os.access(cand, os.X_OK):
+                return cand
+        except OSError:
+            continue
+    return None
+
+
 def _install_node_package(package: str, env_root: pathlib.Path, timeout_sec: int, *,
                           allow_install_scripts: bool = False, cache_root: pathlib.Path | None = None, review_check: Any = None) -> List[Dict[str, Any]]:
     from ouroboros.platform_layer import bootstrap_process_path
@@ -204,12 +331,21 @@ def _install_node_package(package: str, env_root: pathlib.Path, timeout_sec: int
     # A GUI-launched macOS process starts with a truncated PATH; enrich it the
     # same way the process tools do BEFORE deciding npm is absent (T13).
     bootstrap_process_path()
-    npm = shutil.which("npm")
+    npm = _npm_beside_selected_node() or shutil.which("npm")
     if not npm:
         raise RuntimeError("npm is not available on PATH")
     node_root = env_root / "node"
     node_root.mkdir(parents=True, exist_ok=True)
     env = _installer_env(env_root, ecosystem="node", cache_root=cache_root)
+    # npm's launcher (`#!/usr/bin/env node`) and lifecycle scripts
+    # (`node build.js`) resolve `node` via PATH, and the scrubbed installer
+    # HOME breaks version-manager shims — so the npm resolved above dictates
+    # its toolchain dir: its own directory first, where its sibling node
+    # lives. (A PATH-resolved npm prepends its own dir harmlessly.)
+    npm_dir = str(pathlib.Path(npm).parent)
+    path_entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+    if npm_dir and npm_dir not in path_entries:
+        env["PATH"] = npm_dir + (os.pathsep + env["PATH"] if env.get("PATH") else "")
     env["npm_config_prefix"] = str(node_root)
     name = package.rsplit("@", 1)[0] if "@" in package[1:] else package
     package_manifest = node_root / "node_modules" / name / "package.json"

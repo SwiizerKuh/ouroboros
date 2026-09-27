@@ -28,7 +28,7 @@ PROGRAMS = {
 def installed_script(tmp_path, monkeypatch, *, runtime='python3', body="print('ok')", permissions=(), env_keys=(), timeout=60):
     repo = tmp_path / 'repo'
     repo.mkdir(exist_ok=True)
-    data = tmp_path / 'drive, with space'
+    data = tmp_path / 'drive with space'
     payload = data / 'skills/external/runtime_fixture'
     (payload / 'scripts').mkdir(parents=True, exist_ok=True)
     # A unique relative file proves cwd without comparing each runtime's path spelling.

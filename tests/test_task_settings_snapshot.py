@@ -488,7 +488,12 @@ def test_bundled_node_child_reads_projected_task_env():
 
     snapshot = task_settings_snapshot({"OPENAI_API_KEY": "old"}, {"OPENAI_API_KEY": "old"})
     with config.task_settings_scope(snapshot):
-        node = str(pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node") if (pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node").exists() else "node"
+        from tests._shared import hermetic_node_bin
+        node = hermetic_node_bin()
+        if not node:
+            pytest.skip("Node is unavailable")
+        parts = pathlib.Path(node).parts
+        assert pathlib.Path(node).is_absolute() and "shims" not in parts, node
         result = subprocess.run([node, "-e", "process.stdout.write(process.env.OPENAI_API_KEY)"],
                                 env=config.runtime_environ(), text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr

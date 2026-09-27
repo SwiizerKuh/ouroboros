@@ -9,7 +9,6 @@ class names, key API endpoints, secret masking, etc.).
 from __future__ import annotations
 
 import pathlib
-import shutil
 import subprocess
 
 import pytest
@@ -20,8 +19,14 @@ WEB = REPO_ROOT / "web" / "modules"
 
 
 def _node_bin():
-    bundled = pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node"
-    return str(bundled if bundled.exists() else pathlib.Path(shutil.which("node") or "node"))
+    from tests._shared import hermetic_node_bin
+    return hermetic_node_bin()
+
+
+def _assert_real_node_argv(node: str) -> None:
+    """Code-bound proof the test shells a real binary, never a version-manager shim."""
+    parts = pathlib.Path(node).parts
+    assert pathlib.Path(node).is_absolute() and "shims" not in parts, node
 
 
 @pytest.fixture(scope="module")
@@ -140,6 +145,7 @@ def test_mcp_ui_roundtrip_preserves_environment_and_unsupported_fields():
     node = _node_bin()
     if not node:
         pytest.skip("Node is unavailable")
+    _assert_real_node_argv(node)
     script = r'''
 import assert from 'node:assert/strict';
 import { applyMcpSettings, collectMcpSettings } from './web/modules/mcp_settings.js';
@@ -174,6 +180,7 @@ def test_mcp_test_button_preserves_saved_url_only_credentials():
     node = _node_bin()
     if not node:
         pytest.skip("Node is unavailable")
+    _assert_real_node_argv(node)
     script = r'''
 import assert from 'node:assert/strict';
 import { applyMcpSettings } from './web/modules/mcp_settings.js';

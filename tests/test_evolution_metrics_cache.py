@@ -3,13 +3,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 
 from ouroboros.utils import collect_evolution_metrics
 
 
-def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+def _git(repo, *args, _env=None):
+    env = None
+    if _env:
+        env = dict(os.environ)
+        env.update(_env)
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env
+    )
+
+
+# Distinct committer dates: git creatordate has 1-second resolution, so two
+# commits created within the same second tie and --sort=creatordate returns
+# them in arbitrary order (flake). Pinning dates keeps tag order deterministic.
+_V1_DATES = {
+    "GIT_AUTHOR_DATE": "2020-01-01T00:00:00+00:00",
+    "GIT_COMMITTER_DATE": "2020-01-01T00:00:00+00:00",
+}
+_V2_DATES = {
+    "GIT_AUTHOR_DATE": "2020-01-01T00:00:05+00:00",
+    "GIT_COMMITTER_DATE": "2020-01-01T00:00:05+00:00",
+}
 
 
 def test_collect_evolution_metrics_reuses_cache_and_preserves_order(tmp_path):
@@ -25,12 +45,12 @@ def test_collect_evolution_metrics_reuses_cache_and_preserves_order(tmp_path):
     (repo / "prompts" / "SYSTEM.md").write_text("system\n", encoding="utf-8")
     (repo / "a.py").write_text("print('one')\n", encoding="utf-8")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "v1")
+    _git(repo, "commit", "-m", "v1", _env=_V1_DATES)
     _git(repo, "tag", "v1")
 
     (repo / "b.py").write_text("print('two')\nprint('three')\n", encoding="utf-8")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "v2")
+    _git(repo, "commit", "-m", "v2", _env=_V2_DATES)
     _git(repo, "tag", "v2")
 
     tag_lines = _git(

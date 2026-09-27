@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import pathlib
 import re
+import shutil
 from unittest.mock import MagicMock
 
 
@@ -184,3 +186,60 @@ def reconcile_receipt(action=None, reason=None):
     2-tuple silently breaks the caller. Keep fakes going through here.
     """
     return {"action": action, "reason": reason, "process": "", "server_reconcile": ""}
+
+
+def _node_version_key(name: str):
+    """Dotted-numeric sort key for a version directory name; None when unparseable."""
+    parts = []
+    for piece in name.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            return None
+        parts.append(int(digits))
+    return tuple(parts) if parts else None
+
+
+def hermetic_node_bin():
+    """A real ``node`` binary for tests that shell out to Node.
+
+    Version-manager shims (``shims/`` dirs) cannot run under the hermetic test
+    isolation: the disposable HOME/XDG empties the trust DB, so the shim dies
+    with an untrusted-config error instead of running node. Prefer in order:
+    1. the bundled runtime (``~/.claudexor/node/bin/node``),
+    2. the first PATH ``node`` outside a ``shims`` directory,
+    3. a version-manager install adjacent to a shim dir
+       (``<shimdir>/../installs/node/*/bin/node``, newest version wins —
+       a mise-host probe, not a universal resolver).
+    Returns None when no real binary exists; callers skip honestly.
+    """
+    bundled = pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node"
+    if bundled.is_file() and os.access(bundled, os.X_OK):
+        return str(bundled)
+    shim_dirs: list = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        candidate = pathlib.Path(entry) / "node"
+        if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+            continue
+        if "shims" in candidate.parts:
+            shim_dirs.append(pathlib.Path(entry))
+            continue
+        return str(candidate)
+    best = None
+    best_path = None
+    fallback = None
+    for shim_dir in shim_dirs:
+        installs = shim_dir.parent / "installs" / "node"
+        if not installs.is_dir():
+            continue
+        for version_dir in sorted(installs.iterdir(), key=lambda p: p.name):
+            binary = version_dir / "bin" / "node"
+            if not (binary.is_file() and os.access(binary, os.X_OK)):
+                continue
+            if fallback is None:
+                fallback = str(binary)
+            key = _node_version_key(version_dir.name)
+            if key is not None and (best is None or key > best):
+                best, best_path = key, str(binary)
+    return best_path if best_path is not None else fallback

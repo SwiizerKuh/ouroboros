@@ -7,8 +7,11 @@ import pytest
 
 
 def _git(repo: pathlib.Path, *args: str) -> str:
+    # Split stdout/stderr: host git may print warnings (e.g. AppImage
+    # libpcre2 skew) to stderr, and merging it into stdout corrupts SHAs
+    # passed back into vcs_revert. Stderr is captured and discarded here.
     return subprocess.check_output(
-        ["git", *args], cwd=repo, text=True, stderr=subprocess.STDOUT,
+        ["git", *args], cwd=repo, text=True, stderr=subprocess.PIPE,
     ).strip()
 
 

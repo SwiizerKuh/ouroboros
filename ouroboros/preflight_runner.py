@@ -330,6 +330,14 @@ _PRE_COMMIT_BASELINE_REFS = ("HEAD",)
 PRE_COMMIT_PHASE = "pre_commit"
 
 
+def _git_stderr_significant(err: object) -> bool:
+    # Genuine diagnostic, benign host warnings (libpcre2) excluded — mirrors
+    # git_ops_rescue's merge-head filter: rc/presence decide, not stderr.
+    text = err if isinstance(err, str) else (str(err) if err else "")
+    kept = [ln for ln in text.splitlines() if ln.strip() and "no version information available" not in ln]
+    return bool("".join(kept).strip())
+
+
 def _baseline_refs(phase: str) -> tuple:
     return _PRE_COMMIT_BASELINE_REFS if phase == PRE_COMMIT_PHASE else _TESTS_BASELINE_REFS
 
@@ -348,7 +356,7 @@ def _baseline_commit_oids(
         if (
             resolved.returncode == 1
             and not (resolved.stdout or "").strip()
-            and not (resolved.stderr or "").strip()
+            and not _git_stderr_significant(resolved.stderr)
         ):
             symbolic = _run_git(repo, ["symbolic-ref", "--quiet", "HEAD"])
             if symbolic.returncode == 0 and (symbolic.stdout or "").strip():

@@ -364,6 +364,13 @@ def budget_gate_env(monkeypatch, tmp_path):
     _make_minimal_git_repo(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("CLAUDE_CODE_MODEL", "opus")
+    # Isolate the budget-gate skip from the expensive hermetic test preflight:
+    # production order is unchanged; the gate tests stub the preflight to None
+    # so the cheap skip path is reachable deterministically.
+    monkeypatch.setattr(
+        "ouroboros.commit_admission.run_tests_preflight_with_proof",
+        lambda *a, **k: None,
+    )
     original_limit = adv_mod._ADVISORY_PROMPT_MAX_CHARS
     adv_mod._ADVISORY_PROMPT_MAX_CHARS = 10
     try:
@@ -631,6 +638,12 @@ def test_budget_gate_skip_becomes_stale_after_edit(monkeypatch, tmp_path):
     _make_minimal_git_repo(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("CLAUDE_CODE_MODEL", "opus")
+    # Same test-side isolation as budget_gate_env: stub the expensive hermetic
+    # test preflight so the cheap skip path is reachable; production order kept.
+    monkeypatch.setattr(
+        "ouroboros.commit_admission.run_tests_preflight_with_proof",
+        lambda *a, **k: None,
+    )
 
     original_limit = adv_mod._ADVISORY_PROMPT_MAX_CHARS
     try:

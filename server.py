@@ -5,7 +5,6 @@ import base64  # noqa: F401
 import json
 import logging
 import subprocess
-
 import os
 import pathlib
 import sys
@@ -17,13 +16,10 @@ from typing import Any, Dict, Optional
 
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
-
 import uvicorn
-
-from ouroboros.server_control import (
-    execute_panic_stop as _execute_panic_stop_impl,
-    restart_current_process as _restart_current_process_impl,
-)
+from ouroboros.server_control import (execute_panic_stop as _execute_panic_stop_impl,
+                                      restart_current_process as _restart_current_process_impl)
+from ouroboros.startup_historical_audit import audit as _historical_audit
 from ouroboros.server_auth import (
     NetworkAuthGate,
     get_network_auth_startup_warning,
@@ -49,6 +45,9 @@ from ouroboros.server_process import (  # noqa: F401
     _request_restart_exit,
     _restart_requested,
     _supervisor_stop,
+    _exit_signalled,
+    _SignalStopServer,
+    _embedded_uvicorn_server,
     log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
@@ -79,6 +78,7 @@ from ouroboros.server_liveness import (  # noqa: F401
     _chat_turn_wedged,
     _start_supervisor_liveness_watchdog,
     _supervisor_loop_stalled,
+    drain_worker_events, flush_budget_projection,
 )
 from ouroboros.server_maintenance import (  # noqa: F401
     _LAST_CANCEL_INTENT_SWEEP,
@@ -124,7 +124,9 @@ _pytest_default_real_data_dir = (
     and not os.environ.get("OUROBOROS_DATA_DIR")
     and DATA_DIR == pathlib.Path.home() / "Ouroboros" / "data"
 )
-if _pytest_default_real_data_dir:
+if _pytest_default_real_data_dir or __name__ == "__mp_main__":
+    # A spawn/forkserver worker re-imports this module as ``__mp_main__``: it gets a stream
+    # handler only, so two processes never rotate ``server.log`` against each other.
     logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=[logging.StreamHandler()])
 else:
     _log_dir = DATA_DIR / "logs"
@@ -203,6 +205,7 @@ def _restart_current_process(host: str, port: int) -> None:
     )
 
 from ouroboros.config import (
+    SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     SETTINGS_DEFAULTS,
     SettingsIntegrityError,
     load_settings, save_settings, verify_settings_integrity,
@@ -216,7 +219,8 @@ from ouroboros.server_runtime import (
     ws_heartbeat_loop,
 )
 
-_supervisor_ready = threading.Event()
+_supervisor_ready = threading.Event()  # a live generation finished init: the API's `supervisor_ready`
+_supervisor_init_done = threading.Event()  # init reached an outcome (ready OR `_supervisor_error`): boot waiters
 _supervisor_error: Optional[str] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 _supervisor_thread: Optional[threading.Thread] = None
@@ -271,10 +275,14 @@ def _start_supervisor_if_needed(settings: dict) -> bool:
         return False
     if _supervisor_thread and _supervisor_thread.is_alive():
         return False
+    if _exit_signalled.is_set():
+        return False  # the process is exiting: no revival behind the teardown
     _supervisor_error = None
     _supervisor_stop.clear()  # in-process revival after a teardown-stopped generation
+    _supervisor_ready.clear()  # readiness is THIS generation's: Starting, not a stale Online, until init succeeds
+    _supervisor_init_done.clear()
     _supervisor_thread = threading.Thread(
-        target=_run_supervisor,
+        target=_supervisor_generation,
         args=(settings,),
         daemon=True,
         name="supervisor-main",
@@ -283,15 +291,63 @@ def _start_supervisor_if_needed(settings: dict) -> bool:
     return True
 
 
+def _supervisor_generation(settings: dict) -> None:
+    """Thread body: re-check the exit latch, then run one supervisor generation.
+
+    Admission (`_start_supervisor_if_needed`) and this thread start are separate steps,
+    so a settings save can pass the latch check a moment before SIGTERM; a generation
+    that starts anyway must end here, before its startup kill/spawn would run behind
+    the teardown's `kill_workers` (#1142).
+    """
+    global _supervisor_thread
+    if _exit_signalled.is_set():
+        _supervisor_thread = None
+        return
+    _run_supervisor(settings)
+
+
+def _preserve_unprocessed_updates(bridge, updates, consumed: int) -> int:
+    """Best effort, never raises: hand the tail behind the ``consumed``-th update back to the bridge, ids
+    intact, for this process's next read; what is not kept is logged as lost.
+    Memory only: it dies with process exit; accepted rows outlive it."""
+    tail, requeue, kept = list(updates[consumed:]), getattr(bridge, "requeue_updates", None), 0
+    try:
+        if tail and callable(requeue):
+            kept = int(requeue(tail) or 0)
+    except Exception as exc:
+        log.error("Bridge %s hand-back raised: %s", type(bridge).__name__, exc, exc_info=True)
+    if kept < len(tail):
+        log.error("Bridge %s cannot take back %d unprocessed update(s); they are lost", type(bridge).__name__, len(tail) - kept)
+    return kept
+
+
 def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
+    updates = bridge.get_updates(offset=offset, timeout=1)
+    cursor = [0]  # updates taken up so far, the one in flight included
+    try:
+        return _handle_bridge_update_batch(bridge, updates, offset, ctx, cursor)
+    except Exception as exc:
+        # The failing update is the crash the loop accounts for; the ones behind it were
+        # only dequeued, never handled, and come back next tick (the hand-back never raises).
+        failed = (updates[cursor[0] - 1] if 0 < cursor[0] <= len(updates) else {}).get("update_id")
+        kept = _preserve_unprocessed_updates(bridge, updates, cursor[0])
+        log.error("Bridge update %s failed: %s; %d later update(s) handed back to the bridge", failed, exc, kept)
+        raise
+
+
+def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: list) -> int:
     from supervisor.message_bus import coerce_chat_identity
 
-    updates = bridge.get_updates(offset=offset, timeout=1)
     for upd in updates:
+        cursor[0] += 1
         offset = int(upd["update_id"]) + 1
         msg = upd.get("message") or {}
         if not msg:
             continue
+        # get_updates may return several already-queued messages. Rebind the
+        # transport per message rather than using the last route in the batch.
+        if hasattr(bridge, "activate_update_transport"):
+            bridge.activate_update_transport(msg)
 
         chat_id = coerce_chat_identity((msg.get("chat") or {}).get("id"), 1)
         user_id = coerce_chat_identity((msg.get("from") or {}).get("id"), chat_id or 1)
@@ -395,13 +451,19 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
 
         if lowered.startswith("/panic"):
             reply("🛑 PANIC: killing everything. App will close.", "")
+            # Never hand back a volatile tail before Panic: even a nonblocking
+            # callback could perform I/O or delay the hard stop, and this memory
+            # cannot survive the exit. Accepted ingress rows remain on disk.
             _execute_panic_stop(ctx.consciousness, ctx.kill_workers)
+            return offset  # Never drain another already-queued message after Panic.
         elif lowered.startswith("/restart"):
             reply("♻️ Restarting.", "")
             ok, restart_msg = _perform_owner_restart(ctx, reply)
             if not ok:
                 reply(f"⚠️ Restart cancelled: {restart_msg}", "failed")
                 continue
+            _preserve_unprocessed_updates(bridge, updates, cursor[0])  # best effort; this generation handles nothing more
+            return offset  # Remaining accepted rows stay durable; no replay is promised.
         elif lowered == "/review" or lowered.startswith("/review "):
             # Target the requesting chat so the ack and results return to the
             # external transport owner, not the default web owner_chat_id.
@@ -499,7 +561,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                     "task_metadata": task_metadata,
                     "log_text": log_text,
                     "origin_message_ref": origin_message_ref,
-                    "source": source,
+                    "source": source, "received_at": str(msg.get("received_at") or ""),
                 },
             )
     return offset
@@ -590,7 +652,13 @@ def _run_supervisor(settings: dict) -> None:
             log.debug("Failed to stop previous consciousness instance", exc_info=True)
         _consciousness = None
     prior_worker_pids: set[int] | None = None
+    _watchdog_stop = threading.Event()  # per-generation: set on EVERY exit of this generation
     try:
+        # Watch startup stalls; even a failed watchdog start publishes an init outcome.
+        from ouroboros.server_liveness import loop_phase_facts
+        _loop_liveness = [time.monotonic(), {}, time.thread_time(), None]  # slots: server_liveness.py
+        _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "startup", new_tick=True), time.monotonic()
+        _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
         ensure_legacy_imported(pathlib.Path(DATA_DIR))
 
         from supervisor.message_bus import LocalChatBridge, init as bus_init
@@ -641,11 +709,9 @@ def _run_supervisor(settings: dict) -> None:
             branch_dev=_workers_branch_dev, branch_stable=_workers_branch_stable,
         )
 
-        from supervisor.events import dispatch_event
         from supervisor.message_bus import send_with_budget
         from ouroboros.consciousness import BackgroundConsciousness
         import types
-        import queue as _queue_mod
 
         _migrate_startup_cancel_latches(DATA_DIR)
         prior_worker_pids = _startup_worker_pids(DATA_DIR)
@@ -746,27 +812,24 @@ def _run_supervisor(settings: dict) -> None:
             )
         except Exception:
             log.critical("Startup recovery after supervisor initialization failure failed", exc_info=True)
-        _supervisor_ready.set()
+        _supervisor_ready.clear()  # never reached its loop: the API must not paint Online over the error
+        _supervisor_init_done.set()
         _supervisor_thread = None
+        _watchdog_stop.set()  # a generation that died in init has no loop to watch
         return
 
     _supervisor_ready.set()
+    _supervisor_init_done.set()
     log.info("Supervisor ready.")
+    _historical_audit.start(DATA_DIR, REPO_DIR)
 
     offset = 0
     crash_count = 0
     _last_custody_reap = [time.time()]
     _last_review_job_reconcile = [time.time()]
-    # WS3: a dedicated watchdog thread (outside this loop, so it fires even if the
-    # loop stalls) surfaces a wedge as an observable signal + owner alert instead
-    # of silent hours; the loop publishes a liveness tick at each tick PHASE. The
-    # tick is MONOTONIC: it is only ever read as an elapsed gap, so a wall-clock
-    # jump must not turn a healthy loop into a phantom stall (nor hide a real one).
-    from ouroboros.server_liveness import loop_phase_facts, observe_worker_event_lag
-    _loop_liveness = [time.monotonic(), {}, time.thread_time(), None]  # slots: server_liveness.py
-    _watchdog_stop = threading.Event()  # per-generation: stops the watchdog when THIS loop exits
-    _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
-    while not _restart_requested.is_set() and not _supervisor_stop.is_set():
+    # The watchdog was started before startup recovery; never start another here.
+
+    while not _restart_requested.is_set() and not _supervisor_stop.is_set() and not _exit_signalled.is_set():
         try:
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "events", new_tick=True), time.monotonic()
             rotate_chat_log_if_needed(DATA_DIR)
@@ -788,19 +851,14 @@ def _run_supervisor(settings: dict) -> None:
             rotate_jsonl_log_if_needed(DATA_DIR, "task_reflections.jsonl", "task_reflections")
             ensure_workers_healthy()
 
-            event_q = get_event_q()
-            while True:
-                try:
-                    evt = event_q.get_nowait()
-                except _queue_mod.Empty:
-                    break
-                if evt.get("type") == "restart_request":
-                    _handle_restart_in_supervisor(evt, _event_ctx)
-                    continue
-                observe_worker_event_lag(_loop_liveness, evt)
-                dispatch_event(evt, _event_ctx)
+            # One BOUNDED events batch (count + time; the remainder waits for the next
+            # turn), so a producer that keeps the queue non-empty cannot hide intake.
+            backlog = drain_worker_events(
+                get_event_q(), _event_ctx, _loop_liveness, on_restart=_handle_restart_in_supervisor,
+            )
 
             if _restart_requested.is_set():
+                flush_budget_projection(_event_ctx)  # this turn's drained llm_usage still reaches state.json
                 break
 
             # WS3: intake new bridge messages EARLY — before the heavy steps
@@ -808,6 +866,8 @@ def _run_supervisor(settings: dict) -> None:
             # blocking step can never starve new-message intake (the wedge class
             # where no task_received fired for hours until a full restart).
             offset = _process_bridge_updates(bridge, offset, _event_ctx)
+            # The one budget-projection write of this turn (llm_usage events only mark it dirty).
+            flush_budget_projection(_event_ctx)
 
             _loop_liveness[1], _loop_liveness[0] = loop_phase_facts(_loop_liveness, "maintenance"), time.monotonic()
             enforce_task_timeouts()
@@ -845,10 +905,11 @@ def _run_supervisor(settings: dict) -> None:
                     log.warning("Consciousness alarm tick failed", exc_info=True)
 
             crash_count = 0
-            time.sleep(0.5)
+            if not backlog:
+                time.sleep(0.5)  # a turn that hit its events bound drains the backlog at full speed
 
         except Exception as exc:
-            if _supervisor_stop.is_set() or _restart_requested.is_set():
+            if _supervisor_stop.is_set() or _restart_requested.is_set() or _exit_signalled.is_set():
                 # A shutdown-torn Manager proxy is not a supervisor crash.
                 log.info("Supervisor loop exiting on shutdown: %s", exc)
                 break
@@ -1064,7 +1125,7 @@ def _perform_supervisor_restart(
 
 def _wait_for_supervisor_update_finalize() -> bool:
     """Wait for a real init outcome; slow dependency sync is not a failed boot."""
-    _supervisor_ready.wait()
+    _supervisor_init_done.wait()
     return not bool(_supervisor_error)
 
 
@@ -1253,13 +1314,14 @@ async def lifespan(app):
     except Exception:
         log.warning("Project registry boot reconcile failed", exc_info=True)
 
-    _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
+    if not _exit_signalled.is_set():
+        _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
     if has_startup_ready_provider(settings):
         _start_supervisor_if_needed(settings)
     else:
         _supervisor_ready.set()
+        _supervisor_init_done.set()
         log.info("No supported provider or local routing configured. Supervisor not started.")
-
     # P2: finalize a pending managed merge update (post-boot smoke / boot-loop rollback)
     # and run a one-shot boot-time update check (check-on-restart) so the main-screen
     # Update badge reflects availability. Both run OFF the startup critical path and
@@ -1311,7 +1373,7 @@ async def lifespan(app):
             port=host_port,
             log_level="warning",
         )
-        host_service_server = uvicorn.Server(host_service_config)
+        host_service_server = _embedded_uvicorn_server(host_service_config)
         host_service_task = asyncio.create_task(
             host_service_server.serve(sockets=[host_socket]),
             name="host-service-api",
@@ -1391,6 +1453,7 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
+        _historical_audit.stop()
         log.info("Server shutting down...")
         # Let the loop leave its current tick BEFORE workers are killed and the
         # bridge/Manager go down: a tick still running would otherwise respawn
@@ -1530,6 +1593,7 @@ def _restart_cleanup_kwargs() -> dict:
 
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
+    _historical_audit.stop()  # forced path may skip lifespan's finally; stop never waits
     try:
         from ouroboros.tools.shell import kill_all_tracked_subprocesses
         kill_all_tracked_subprocesses()
@@ -1636,8 +1700,11 @@ def main() -> int:
         log_level="warning",
         ws_ping_interval=20,
         ws_ping_timeout=20,
+        # Bound the open HTTP/WS drain so the lifespan teardown (terminal custody) starts inside
+        # the launcher's stop budget instead of leaving terminalization to the next boot (#1142).
+        timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     )
-    server = uvicorn.Server(config)
+    server = _SignalStopServer(config)
     _uvicorn_exited = threading.Event()
 
     def _check_restart():

@@ -51,10 +51,10 @@ Enforcement: `tests/test_protected_artifacts_policy.py` and `tests/test_acceptan
 ### Skill-defined Presence
 
 - Keep behavior portable and authority installation-local: a reviewed `presence:` profile declares instructions, context topics, bounded runtime defaults and conceptual tool/script/resource requests — never provider credentials, room ids or one installed tool spelling; `presence_capabilities.py` stores the owner's exact selections outside the payload, fingerprinted by the request semantics that authorize them. Preserve its optional `workspace_root` (an owner-local external folder, validated through the existing workspace admission and copied into each task contract) when editing runtime/capability selections; unset profiles retain their prior serialized state and fingerprint. Presence keeps canonical shared memory without deriving a Project or creating a forked drive from that folder (ARCHITECTURE §6 "Skills and extensions").
-- Presence authority is a positive immutable ceiling, not a denylist or a prompt promise: admission requires the owner-created binding plus an installed, enabled, freshly executable behavior skill and every required selection, then freezes skill/profile/state/selection fingerprints, exact grants (the profile's selections plus the constant cognitive-memory baseline `tool_capabilities.COGNITIVE_MEMORY_TOOL_NAMES`; a selected grant keeps its bindings), argument bindings, runtime slot and round limit into `task_contract.capability_ceiling`. Schema discovery and execution enforce that same ceiling for built-ins, extensions, MCP tools, scripts and resource roots.
+- Presence authority is a positive immutable ceiling, not a denylist or a prompt promise: admission requires the owner-created binding plus an installed, enabled, freshly executable behavior skill and every required selection, then freezes skill/profile/state/selection fingerprints, exact grants (the profile's selections plus the constant cognitive-memory baseline `tool_capabilities.COGNITIVE_MEMORY_TOOL_NAMES` and the own-work baseline — both readers host-bound to `presence_scope=own_binding`, `steer_task`; a selected grant keeps its bindings), argument bindings, runtime slot and round limit into `task_contract.capability_ceiling`. Schema discovery and execution enforce that same ceiling for built-ins, extensions, MCP tools, scripts and resource roots.
 - `state/presence_bindings.json` is host-owned authority: a transport token resolves only bindings naming that exact transport skill, and the submitted provider/account/conversation/thread must match the binding origin — never recover those identities from message text. Staged files stay inside the calling skill's state root before entering the ordinary attachment store (the turn flow: ARCHITECTURE §12).
 - Run each admitted event with a fresh agent, a deterministic binding-plus-source-event task id, the cross-process installation-wide concurrency gate and per-conversation serialization; the transport's durable provider custody owns arrival FIFO before Host admission. Do not add a transport-specific task scheduler, memory silo, core terminal outbox or resident cross-room agent.
-- Completion is exactly `message`, `silent`, `tool_delivered` or `deferred` (deferred requires a successfully promoted `work_ref`; correlated lookup stays behind the same transport token and binding, and `presence_cancel_work` additionally requires the current binding and conversation to match). Promotion and `schedule_followup` copy the Presence metadata, admitted workspace and capability ceiling by value; any new descendant producer preserves this ceiling or refuses the transition — reconstructing authority from mutable current state is forbidden.
+- Completion is exactly `message`, `silent`, `tool_delivered` or `deferred` (deferred requires a successfully promoted `work_ref`; correlated lookup stays behind the same transport token and binding). A Presence caller reads, steers and cancels only independent roots of its own nonempty binding (`presence_authority.presence_work_refusal`); a delegated descendant is one through the inherited `metadata.presence_binding_authority` alone, never the speaker's `metadata.presence`; and a forced final speaks only its nested `presence_finish` declaration. Promotion and `schedule_followup` copy one Presence carrier (`presence_root_carrier`: speaker metadata or a descendant's binding), admitted workspace and capability ceiling by value; any new descendant producer preserves this ceiling or refuses the transition — reconstructing authority from mutable current state is forbidden.
 - Knowledge-topic and scratchpad mutation each use one stable lock, so concurrent owner and Presence turns cannot overwrite a newer projection with an older render. Test the boundary at both layers — strict profile/state/ceiling parsing, stale/missing review admission, schema and direct-execution filtering, argument binding, binding/token/origin checks, event idempotency and conversation ordering, typed outcomes, late-work correlation, promotion/follow-up inheritance; provider adapter E2E is separate evidence. Enforcement: `tests/test_presence_admission.py` plus the both-layer boundary tests this list requires.
 
 ### Devtools isolation
@@ -105,9 +105,9 @@ Run roots are append-only outside `repo/` and live `data/`; the focused contract
   rejected as soon as it exceeds the source's initial regular-file size rather
   than waiting for a growing file to reach EOF. HTTP admission and
   materialization run their whole blocking operation off the event loop
-  (`gateway._helpers.run_sync_to_completion`); cancellation waits for it before
-  releasing anything, and cancelling an HTTP waiter never cancels the admitted
-  task. Directory exports carry a complete relative member/size/SHA manifest
+  (`gateway._helpers.run_sync_to_completion`); every async ingress-lock
+  caller uses it for locked row → queue → echo. Cancellation settles before release; receive loops
+  stay responsive. Cancelling an HTTP waiter never cancels the admitted task. Directory exports carry a complete relative member/size/SHA manifest
   plus a streamed ZIP (outputs above 50 MiB included); a changed file or
   missing member is an explicit capture failure, while genesis LISTING is
   discovery and only capture/copy is strict.
@@ -209,14 +209,14 @@ successor-parity and artifact-transport rules are review-only.
   that reason).
 - Durable artifacts are NOT age-pruned: genesis projects
   (`OUROBOROS_SUBAGENT_PROJECTS_ROOT`) and forensic observability blobs (kept
-  compressed indefinitely by contract; startup runs a census, never a
-  deletion).
+  compressed indefinitely by contract; blobs are never deleted or
+  counted).
 - Review continuations are recovery state, not disposable GC: archive a record
   (collision-safe move, never delete) only when its owner task is settled, it
   stayed un-resumed past the seven-day threshold and no recorded obligation
   remains open; any uncertainty or move error leaves the live record intact.
 
-Enforcement: `tests/test_phase3c_observability_gc.py` (the unified knob and the cutoff math) and `tests/test_observability_retention.py` (the census and preserve-indefinitely contract); the review-continuation archive rule has no automated surface — review-only.
+Enforcement: `tests/test_phase3c_observability_gc.py` (the unified knob and the cutoff math) and `tests/test_observability_retention.py` (the preserve-indefinitely contract); the review-continuation archive rule has no automated surface — review-only.
 
 ### Live subagents
 
@@ -266,6 +266,12 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   never mint task authority. Do not parse assignment prose to choose a profile
   or repeat competing native access instructions; preserve owner constraints
   in the complete work order.
+- A live message into a running run (`delegate_message`) is gated by the
+  engine's operation catalog and the route row's declared `liveInput`, never
+  by a harness name; outcomes mirror the engine's typed enum plus the host's
+  `not_found`; the host-minted `message_id` is the wire Idempotency-Key and is
+  reused ONLY after `delivery_unknown`. No retry loop, no stall detector, no
+  custody row (ARCHITECTURE §6 "Delegated subagents").
 - `subagents.route_health` is the ONE route reader for every consumer, and
   quota readers project one `ClaudexorGateway.quota_state()` envelope
   (`tests/test_available_subagents_runtime.py`): a fully-used ratio without a
@@ -309,7 +315,7 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
   generic data-tool behavior while fixing isolation (`forward_to_worker`
-  writes only to validated running tasks in the current task/root lineage).
+  writes only to validated running or queued tasks in the current lineage).
 - A custody row carries its owner's kind; every sweep, audit and counter over
   custody rows states which kinds it covers. A review-owned run
   (`RunCustody.review_owned`) belongs to its panel — never the task's open
@@ -326,7 +332,10 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   staged-never-committed) is unchanged
   (`tests/test_delegated_run_isolation_orphans.py`). A copy failure or a
   source change against the baseline leaves no registered snapshot or pinned
-  ref (`tests/test_snapshot_file_inputs.py`).
+  ref; no tree walk or per-file git process runs under the worktree ops lock on
+  the delegated snapshot, payload and acting `self_worktree` paths (boot-time
+  `prune_orphans` and genesis excepted)
+  (`tests/test_snapshot_file_inputs.py`, `tests/test_subagent_worktrees_lock_scope.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool final
   answer while direct children run undecided — one bounded absorption
   reminder, then best-effort (`children_unabsorbed`); the delivery candidate
@@ -334,7 +343,7 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   rides the reminder round (`tests/test_v6570_swarm_honesty.py`). `wait_tasks`
   stays batch-compact;
   `control_task_results._wait_for_tasks` owns its projection, documented under
-  ARCHITECTURE's "Waiting on children"; full untruncated handoff belongs to `get_task_result` and `wait_task`, and the
+  ARCHITECTURE's "Waiting on children"; full untruncated handoff belongs to `get_task_result` and a settled `wait_task`, and the
   model result and the optional `terminal_host_notice` stay separate. No
   shared ledgers, automatic memory merges or new settings/endpoints unless the
   accepted plan calls for them. Push/live events are wakeups, not terminal
@@ -365,12 +374,12 @@ The imperatives:
   child-drive merge or terminality logic in gateways/tools. Task waits use
   `SETTLED_STATUSES` and structured facts plus queue-heartbeat freshness —
   never keyword matching.
-- `wait_task` and `wait_tasks` also peek the waiting actor's own mailbox (its
-  execution drive, not its budget root) through the existing transport-wait
-  reader: both waits disclose early return for pending mail without ACK or stopping
+- `wait_task`, `wait_tasks` and `await_messages` peek the waiting actor's own
+  mailbox (its execution drive, not its budget root) through the transport-wait
+  reader: the waits disclose early return for pending mail without ACK or stopping
   children; the round-top drain delivers and acknowledges it. One
   episode may retain only a PROVED empty mailbox (fingerprints compared before
-  and after the full reader); a read failure or torn data is never proof and
+  and after the reader); a read failure or torn data is never proof and
   is never cached; no TTL and no ACK in peek.
 - Terminal quiz reconciliation closes the paired wait even if the answer
   arrived before worker capacity was granted; keep the answer and source
@@ -699,10 +708,22 @@ and what enforces each.
   root subtree (never `$0` on a read failure); no second ledger, no reconciliation LLM.
 - Runtime notices after the first user/assistant/tool turn are `[SYSTEM NOTICE]` user
   notices, not new `role=system` messages; `LLMClient` demotes non-leading system
-  messages at the provider boundary.
+  messages at the provider boundary. On the OpenAI family and the Claudexor route the LEADING
+  system message's declared mutable blocks also travel as one `[SYSTEM NOTICE]` user notice
+  BEFORE the first user turn (`llm_messages.split_leading_system_prefix`), so the
+  marker has these two meanings.
 - **Cache-friendliness invariant.** Keep stable governance/task contracts before
   mutable evidence; timestamps, hashes, counters and task IDs never belong in a
-  cached prefix. Builders place bare breakpoints (four at most in review,
+  cached prefix. "Stable before mutable" is the Anthropic-breakpoint rule; on the
+  OpenAI family (dated 2026-09-25 observation: the whole leading system section plus
+  tools is one cache unit, reused under one routing key) mutable evidence may not
+  share the leading system section at all — the Main builder DECLARES its stable
+  prefix (`_stable_prefix_blocks`, `context_fit.ContextFitProjection.system_message`)
+  and only the transport projects it (`llm_messages.split_leading_system_prefix` on
+  `llm_attempt.openai_family_route` and in `llm_claudexor._request`, whose backend
+  reuses a donor's prefix only up to an input-item boundary); never project in a builder, never widen the
+  family by name resemblance, and keep the notice header byte-stable (no clocks,
+  hashes, ids). Builders place bare breakpoints (four at most in review,
   `review_substrate.assert_cache_breakpoint_cap`); only
   `LLMClient._normalize_payload_cache_ttl` finalizes them. Preserve existing
   provider hints and recovery; do not add a generic cache/retry framework.
@@ -711,9 +732,11 @@ and what enforces each.
   cached input; a main-loop payload option lives in `main_loop_wire_options`, never
   in one lane after its builder (`tests/test_wrapup_real_send_parity.py`). Preserve `context_fit.seal_task_transcript`'s single message
   marker as it moves between task and tool result; direct Anthropic and
-  OpenRouter keep their supported wire markers. OpenRouter's derived identity
-  excludes cache/host metadata, preserving real task/model differences and
-  explicit affinity. Claudexor's `cache_key_for_model` is shared per install/model
+  OpenRouter keep their supported wire markers. OpenRouter's derived session is
+  per family (`llm_routing._openrouter_session_identity`): OpenAI family = one per
+  model + governance prefix; every other family = conversation-stable from stable
+  policy/model plus the first-user projection, excluding cache/host metadata;
+  explicit affinity and reroute rotation keep precedence. Claudexor's `cache_key_for_model` is shared per install/model
   across tasks, children and wakes: Codex reuses cross-conversation prefixes
   only under the same session. Other API routes retain their prefix identity.
   A wake shares an owner turn's schemas/governance; autonomy and wake reason
@@ -725,6 +748,8 @@ and what enforces each.
   send; image eviction is unchanged. Mechanisms: ARCHITECTURE §6 "Context fitting,
   retry, and compaction" / "Task lifecycle" / "Caller-owned subscription model
   calls". Enforce with `tests/test_review_prompt_caching.py`,
+  `tests/test_openai_system_prefix_split.py` (projection, placement, per-family
+  session), `tests/test_prompt_cache_v664.py` (derived identity, one exact retry),
   `tests/test_transcript_prefix.py` (real Main loop, plain/multipart) and
   `tests/test_transcript_provider_shapes.py` (local/GigaChat); CHECKLISTS item 22.
 - Only sealed reasoning artifacts bind fallback to their endpoint
@@ -795,6 +820,8 @@ and what enforces each.
   an addressed task/owner message, a direct-child signal, control/recovery judgment or a
   model-requested one-shot checkpoint wakes it. No caller-visible `wait_sec`, repeating
   timers, progress wakes or host semantic stall detector.
+- Wake facts are measured over the interval the actor experienced (whole-call `sleep` stamped at
+  the one publication point, never a tick's `waited_sec`); the acked child cursor is task-scoped.
 - Wait/continue/stop is a structured fact — terminal status plus heartbeat freshness
   from `queue_snapshot.json` via `task_status.py` — never a keyword or regex over
   content (BIBLE P5). Fixed kill-timeouts (hard task/tool ceilings, watchdog) stay the
@@ -820,8 +847,8 @@ and what enforces each.
 - Timeout classes are separate axes. A transport timeout
   (`OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC`) bounds only a dead socket — never a
   reasoning cutoff or evidence of a stall. API review uses it as a settlement fallback
-  (that request ends there); a delegated agent session inherits the task absolute
-  ceiling (the paid run can outlive an HTTP read); the owner deadline narrows either;
+  (that request ends there); a delegated agent session inherits the task operation
+  window (the paid run can outlive an HTTP read); the owner deadline narrows either;
   provider transport defaults (Anthropic, VLM captioning) are ceilings, not promises.
   Default reviewer slots deliberately have no short cognition cap; the outer `plan_task` envelope
   covers the session lifetime; `web_search` sizes its envelope for the complete
@@ -916,6 +943,25 @@ and what enforces each.
   unconditional `FINAL ANSWER:` or the task-level answer protocol. Host notices stay
   outside answer bytes/identity via terminal record/outbox/System on replay and
   single-body/headless transports; unchanged answers never revive superseded verdicts.
+- Plan review verdict: GREEN means a quorum answered and no blocking finding or
+  `need_evidence` without a disposition remains; notes never change it.
+  `plan_spec.closure_after_disposition` is the ONE closure table: under advisory a
+  reasoned reject closes a below-quorum blocking finding (per finding); blocking-mode
+  closure is unchanged; a closed REVIEW_REQUIRED is written as GREEN with a closure
+  note on every write path, and the four control validators keep accepting older
+  closed REVIEW_REQUIRED rows. An author-selected revised plan publishes the critic
+  wave's real pair labelled `historical_critic`, never an invented verdict. An envelope
+  `reviewer_effort` outranks a row's pinned effort for plan review only (an argument of
+  `plan_review_slots`, never a contextvar; a compound route slug keeps its encoded
+  effort); every wave records its effective per-seat efforts, the owner baseline captured
+  at dispatch and one typed `ordered_weaker`. On a same-spec cycle a seat that does not
+  answer keeps its still-open findings listed (`carried_absent_answer`), never counted as
+  parseable. The own-room conversation reaches every reviewer as numbered readable lines;
+  progress and host rows stay behind the exact snapshot; session reads of it are an
+  observed fact (`observed_sources`), never a gate. Tests: `tests/test_plan_spec.py`, `tests/test_plan_review_engine_quorum.py`,
+  `tests/test_awaited_review_not_degraded.py`, `tests/test_plan_author_disclosure.py`,
+  `tests/test_plan_review_epoch.py`, `tests/test_reviewer_slot_route_contract.py`,
+  `tests/test_plan_dialogue_snapshot.py`, `tests/test_review_session_reads.py`.
 - Keep delivered result, unresolved tool-call evidence and host acceptance separate.
   Error count alone does not degrade execution or establish objective acceptance;
   retain `execution.unresolved_tool_errors` and the cosmetic bucket, and expose the
@@ -963,12 +1009,12 @@ and what enforces each.
   generation. File/diff requests impose no commit-or-revert rule; self-modification
   keeps reviewed commits (BIBLE P0/P3).
 - Before cleanup, freeze `review_evidence.task_inputs` and `completion_observations`
-  for summary/reflection (ARCHITECTURE §6 "Post-task reflection"): whole owner Q/A,
-  peer provenance and canonical split-root verification receipts. Zero exit is positive;
+  for reflection (ARCHITECTURE §6 "Post-task reflection"): run origin, whole
+  owner Q/A, peer provenance and canonical split-root verification receipts. Zero exit is positive;
   absent is unknown; unrelated passes erase no failure. Send content, not pointers;
   recover the same snapshot. Count delivery via `OWNER_DELIVERY_TOOL_NAMES`, never
-  global skill state. Summary uses `chat_observed` custody and the task-scoped,
-  archive-aware trace reader.
+  global skill state. The free `host_task_facts` row makes no model call; the paid
+  reflection and its Pattern Register write use `chat_observed` custody.
 - Promoted tasks carry their host-minted root id and role on the queue payload.
   RUNNING writes preserve the actual `_task_started_ts` as `started_at` and an existing
   `queued_at`; terminal `ts` stays its own field; missing historical start facts stay
@@ -1046,12 +1092,21 @@ and what enforces each.
   author completion separately, never rewriting criticism or hiding independent failed
   effects, unaccepted review or unfinished stops (DEVELOPMENT §11; ARCHITECTURE §3).
   No task scope review or commit-gate reuse.
+- Plan-review answers are durable statements merged by `finding_id`: a later answer
+  supersedes only its own id, and two entries for one id in ONE call stay contradictory and
+  open. Answering and re-asking are one optional call: an envelope with items records them
+  first, then reviews; the unchanged envelope asks only the named slots, and every other
+  slot's recorded row is replayed at $0 (`not_dispatched` + `replayed_from`, never a send),
+  keyed by fingerprint equality. An addressed slot without a parseable answer keeps its
+  findings; a quiz answer never closes a finding; no host path buys a panel the mind did
+  not send (`tests/test_plan_review_answer_channel.py`).
 - Keep reviewer DIALOGUE evidence: typed `disposition_kind`/`obligation_id` identifies
   obligations; disclose unknown re-raise ids as `new`. Reopen rows with
   arguments intact. A terminal critic vote cannot deny author reaction or choose its stop. Blocking may save corrections and stop; advancement needs fresh
   reviewer authority. Advisory may explicitly finish revisions after exposed feedback
   or disclosed unavailability without another panel. Keep critic/author hashes separate;
-  bind intent to delivery evidence; consume it on owner/evidence supersession.
+  bind a finish to delivery evidence (a stop needs no freshness); consume it on
+  owner/evidence supersession.
   Queueing is not exposure; predeclared finish cannot authorize unseen feedback;
   `author_action=stop` grants neither completion nor permission. No semantic counters or
   keyword gates (P5). ARCHITECTURE §6 owns material-only continue, invalid-vote abstention

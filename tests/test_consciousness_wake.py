@@ -90,6 +90,91 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     assert wake.wake_events(tmp_path / "missing", since=since, now=T0) == []
 
 
+
+def test_answered_cards_of_the_window_are_events_with_their_facts(tmp_path):
+    since = T0 - 3600
+    long_comment = "Keep the old parser.\n\nReason: " + "the migration cost is too high; " * 120 + "END-OF-COMMENT"
+    _result(tmp_path, "early", ts=since + 100, cost=0.25, description="earlier settled work")
+    _result(tmp_path, "late", ts=since + 3000, cost=0.75, description="later settled work")
+    _result(tmp_path, "asker", ts=since - 500, status="completed", quizzes={
+        # Answered by a button inside the window: stamps, the chosen label, a question preview.
+        "qbtn": {"state": "answered", "asked_at": _iso(since - 7200), "answered_at": _iso(since + 600),
+                 "options": ["Rewrite it", "Keep it"], "answered_index": 1,
+                 "question": "Should the parser be rewritten before the release?"},
+        # Answered in the owner's own words inside the window: the words arrive whole.
+        "qown": {"state": "answered", "asked_at": _iso(since + 60), "answered_at": _iso(since + 2400),
+                 "options": ["A", "B"], "comment": long_comment, "question": "Which parser?"},
+        # Answered before the window: not news for this wake.
+        "qold": {"state": "answered", "asked_at": _iso(since - 9000), "answered_at": _iso(since - 60),
+                 "options": ["A", "B"], "answered_index": 0, "question": "Old question"},
+        # Still unanswered after its task finished: listed as before, in the card list.
+        "qopen": {"state": "expired_terminal", "asked_at": _iso(since - 300), "question": "Still waiting?"},
+    })
+    lines = wake.wake_events(tmp_path, since=since, now=T0, reason="task_finished:asker:completed")
+    btn = next(line for line in lines if line.startswith("- owner card qbtn "))
+    assert btn == ("- owner card qbtn on task asker: answered 50 min ago; asked 3 h 0 min ago; "
+                   "chose option 2: Keep it; question: Should the parser be rewritten before the release?")
+    own = next(line for line in lines if line.startswith("- owner card qown "))
+    assert own.startswith("- owner card qown on task asker: answered 20 min ago; asked 59 min ago; "
+                          "answered in own words: Keep the old parser.")
+    assert long_comment in own and "END-OF-COMMENT; question: Which parser?" in own  # whole, never clipped
+    assert not any("qold" in line for line in lines)
+    assert any(line.startswith("- owner card qopen on task asker: Unanswered · the task finished") for line in lines)
+    # Answers sort with the settled facts by their own stamp (newest first), after the trigger;
+    # the trigger's de-duplication of its own task never hides an answer on that task.
+    assert lines[0].startswith("- wake cause: task asker finished")
+    events = [line.split()[1:4] for line in lines[1:] if not line.startswith("- owner card qopen ")]
+    assert events == [["task", "late", "completed,"], ["owner", "card", "qown"],
+                      ["owner", "card", "qbtn"], ["task", "early", "completed,"]]
+    # No verdict words about what the owner meant.
+    assert not any(word in btn + own for word in ("understood", "confused", "misunderstood"))
+
+
+def test_answered_card_line_renders_mixed_answers_and_missing_facts_honestly():
+    now = T0
+    both = wake._answered_card_line("t1", "q1", {
+        "answered_at": _iso(now - 120), "asked_at": _iso(now - 240), "options": ["Go", "Stop"],
+        "answered_index": 0, "comment": "but only on weekdays", "question": "Deploy?"}, now=now)
+    assert both == ("- owner card q1 on task t1: answered 2 min ago; asked 4 min ago; "
+                    "chose option 1: Go; with the words: but only on weekdays; question: Deploy?")
+    bare = wake._answered_card_line("t1", "q2", {"answered_at": "not a stamp", "answered_index": 5}, now=now)
+    assert bare == ("- owner card q2 on task t1: answered at an unknown time; asked at an unknown time; "
+                    "chose option 6: label unavailable; question: question text unavailable")
+    empty = wake._answered_card_line("t1", "q3", {"answered_at": _iso(now - 60)}, now=now)
+    assert "answer text unavailable" in empty
+
+@pytest.mark.parametrize("status, origin", [("failed", "host_notice"), ("cancelled", ""),
+                                           ("completed", "host_notice"), ("failed", "model_final")])
+def test_failed_inline_presence_is_visible_on_regular_wake_without_reviving_owner_turns(tmp_path, status, origin):
+    from ouroboros.presence_runner import _build_task
+    from ouroboros.task_results import write_task_result
+    from tests.test_presence_runner import _admission, _event
+
+    task = _build_task(_admission(), _event(), drive_root=tmp_path, staged_files=())
+    assert task["_is_direct_chat"] is True
+    metadata = {**task["metadata"], "presence_outcome": "deferred", "presence_result_text": "",
+                "presence_work_ref": "still-running-child"}
+    write_task_result(tmp_path, task["id"], status, _is_direct_chat=True, metadata=metadata,
+                      terminal_origin=origin, result="Host diagnostic remains available in the task.")
+    _result(tmp_path, "owner-failed", ts=T0, direct=True, status="failed")
+    _result(tmp_path, "successful-presence", ts=T0, direct=True)
+    path = tmp_path / "task_results" / "successful-presence.json"
+    successful = json.loads(path.read_text(encoding="utf-8"))
+    successful.update(metadata={"presence": {}, "presence_outcome": "message"}, terminal_origin="model_final")
+    path.write_text(json.dumps(successful), encoding="utf-8")
+
+    lines = wake.wake_events(tmp_path, since=0, now=T0, reason="heartbeat")
+    fact = next(line for line in lines if line.startswith(f"- task {task['id']} "))
+    assert f" {status}" in fact and "Presence outcome=deferred" in fact
+    assert "get_task_result" in fact and "deferred work=still-running-child" in fact
+    assert not any("owner-failed" in line or "successful-presence" in line for line in lines)
+    assert not any(task["id"] in line for line in wake.wake_events(
+        tmp_path, since=0, now=T0, reason="heartbeat", exclude_task_id=task["id"]))
+    metadata["initiator"] = "consciousness"
+    write_task_result(tmp_path, task["id"], status, _is_direct_chat=True, metadata=metadata, terminal_origin=origin)
+    assert not any(task["id"] in line for line in wake.wake_events(tmp_path, since=0, now=T0, reason="heartbeat"))
+
+
 def test_project_digest_pins_human_project_and_related_task_before_cards(tmp_path):
     since = T0 - 3600
     (tmp_path / "state").mkdir()
@@ -150,18 +235,18 @@ def test_render_substitutes_every_placeholder_and_truncates_events_honestly(tmp_
         running=1, max_tasks=2, interval=3300)
     for key in wake.PLACEHOLDERS:
         assert "{" + key + "}" not in text, key
-    assert text.startswith("[Wake-up · task_finished:t14:completed]")
-    assert "1 h 30 min ago" in text and "autonomy act — everything your runtime mode allows except" in text
-    assert "toggle_evolution, request_restart (calling them is refused)" in text
-    assert "Allowance (last 24 h): 4.00 / 20.00 USD" in text and "still running: 1/2" in text
-    assert "wake-up interval is 3300 s" in text
+    assert text.startswith("You are Ouroboros. No one has asked for a task")
+    assert "1 h 30 min ago" in text and "autonomy: act — everything your runtime mode allows except" in text
+    assert "toggle_evolution, request_restart" in text
+    assert "allowance accounting (last 24 h): 4.00 / 20.00 USD" in text and "tasks running: 1/2" in text
+    assert "next interval: 3300 s" in text
     assert "- wake cause: task t14 finished (completed)" in text
     assert text.count("- task t") == wake.EVENT_LINES_MAX - 1 and "(+5 more; see recent_tasks, get_task_result, and chat_history)" in text
     quiet = wake.render_wake_message(
         tmp_path, repo, reason="heartbeat", last_wake_at=0.0, since=T0 + 1, now=T0, level="full",
         disabled_tools=[], spent_usd=None, daily_usd=0, running=0, max_tasks=0, interval=900)
     assert "no wake since this process started" in quiet and "wake cause: scheduled heartbeat" in quiet
-    assert "withheld at this level: none" in quiet and "Allowance (last 24 h): unknown / 0.00 USD" in quiet
+    assert "unavailable tools: none" in quiet and "allowance accounting (last 24 h): unknown / 0.00 USD" in quiet
     assert "including evolution" in quiet
 
 
@@ -179,11 +264,8 @@ def test_template_names_only_its_placeholders_and_the_wake_hints():
     import re
 
     assert set(re.findall(r"\{([a-z_]+)\}", template)) == set(wake.PLACEHOLDERS)
-    for hint in ("Doing nothing is a fine outcome", "ask only when the answer changes what you do",
-                 "say what you assume meanwhile", "choose how long", "do not request an acceptance review",
-                 "old cards and routine maintenance should not displace", "`set_next_wakeup`", "Allowance (last 24 h)",
-                 "opening with why you woke or what changed", "be brief, no essays unless something matters",
-                 "people you talk with", "task cards", "get_task_result"):
+    for hint in ("A pause is a legitimate decision", "Distinguish incremental cash cost",
+                 "do not request task acceptance", "wake facts", "recent facts"):
         assert hint in template, hint
     assert "a heartbeat, a task that finished, a project digest" not in template
     assert "up to 10 rounds" not in template and "300 seconds" not in template

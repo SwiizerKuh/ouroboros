@@ -303,15 +303,22 @@ def test_supervisor_startup_restores_queue_before_worker_reset():
 
 
 def test_update_finalizer_waits_for_real_supervisor_outcome(monkeypatch):
+    """The waiter blocks on the init OUTCOME latch, never on readiness: a failed
+    init is an outcome that must not hang the boot, and it must not have to
+    fake readiness to unblock this waiter (the API would paint Online)."""
     import server
 
     calls = []
-    ready = SimpleNamespace(wait=lambda: calls.append("wait"))
-    monkeypatch.setattr(server, "_supervisor_ready", ready)
+    outcome = SimpleNamespace(wait=lambda: calls.append("wait"))
+    monkeypatch.setattr(server, "_supervisor_init_done", outcome)
+    monkeypatch.setattr(server, "_supervisor_ready", threading.Event())  # never set here
     monkeypatch.setattr(server, "_supervisor_error", None)
 
     assert server._wait_for_supervisor_update_finalize() is True
     assert calls == ["wait"]
+    monkeypatch.setattr(server, "_supervisor_error", "Supervisor init failed: boom")
+    assert server._wait_for_supervisor_update_finalize() is False
+    assert calls == ["wait", "wait"]
 
 
 def test_boot_update_check_notifies_the_live_ui():
@@ -397,7 +404,7 @@ def test_main_normal_exit_does_not_run_emergency_cleanup(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "find_free_port", lambda _host, port: port)
     monkeypatch.setattr(server, "write_port_file", lambda *_a, **_k: None)
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
-    monkeypatch.setattr(server.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(server, "_SignalStopServer", FakeServer)  # the main() server seam (#1142)
     monkeypatch.setattr(server, "_emergency_process_cleanup", lambda: cleanup_calls.append("cleanup"))
     monkeypatch.setattr(server, "_event_loop", None)  # the watcher's close_all_ws hop needs no loop here
     server._restart_requested.clear()
@@ -435,7 +442,7 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "find_free_port", lambda _host, port: port)
     monkeypatch.setattr(server, "write_port_file", lambda *_a, **_k: None)
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
-    monkeypatch.setattr(server.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(server, "_SignalStopServer", FakeServer)  # the main() server seam (#1142)
     monkeypatch.setattr(server, "_LAUNCHER_MANAGED", True)
     monkeypatch.setattr(server, "_emergency_process_cleanup", lambda **kw: cleanup_calls.append(kw))
     monkeypatch.setattr(server.os, "_exit", lambda code: (_ for _ in ()).throw(ExitCalled(code)))
@@ -698,7 +705,6 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         monkeypatch.setattr(workers_mod, name, noop)
     monkeypatch.setattr(workers_mod, "get_event_q", lambda: queue_mod.Queue())
     monkeypatch.setattr("ouroboros.delegate_recovery.pre_adopt_planned_handoffs", noop)
-    monkeypatch.setattr("ouroboros.observability.prune_observability_blobs", lambda _root: {})
     monkeypatch.setattr("ouroboros.tools.services.prune_service_logs", lambda _root: {})
     monkeypatch.setattr("ouroboros.consciousness.BackgroundConsciousness", _Consciousness)
     return rec
@@ -871,6 +877,6 @@ def test_supervisor_revival_clears_a_stale_stop_flag(monkeypatch):
     try:
         assert server._start_supervisor_if_needed({}) is True
         assert server._supervisor_stop.is_set() is False
-        assert started == [server._run_supervisor]
+        assert started == [server._supervisor_generation]  # the latch-checking thread body (#1142)
     finally:
         server._supervisor_stop.clear()

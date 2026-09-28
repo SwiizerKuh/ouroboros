@@ -44,6 +44,11 @@ class _GigaChatLaneMixin:
             "scope": str(target.get("scope") or "GIGACHAT_API_PERS"),
             "verify_ssl_certs": bool(target.get("verify_ssl_certs", True)),
         }
+        from ouroboros.net_transport import extra_ca_bundle
+
+        bundle = extra_ca_bundle()
+        if bundle:
+            kwargs["ca_bundle_file"] = bundle
         for source, destination in (
             ("api_key", "credentials"), ("user", "user"), ("password", "password"),
             ("base_url", "base_url"),
@@ -81,7 +86,9 @@ class _GigaChatLaneMixin:
         base_url = str(target.get("base_url") or "")
         verify = bool(target.get("verify_ssl_certs", True))
         timeout_key = float(timeout) if timeout and timeout > 0 else None
-        cache_key = (credentials, user, password, scope, base_url, verify, timeout_key)
+        from ouroboros.net_transport import extra_ca_bundle
+
+        cache_key = (credentials, user, password, scope, base_url, verify, timeout_key, extra_ca_bundle())
 
         if cache_key not in self._gigachat_clients:
             self._gigachat_clients[cache_key] = self._new_gigachat_client(target, timeout=timeout)
@@ -303,6 +310,11 @@ class _GigaChatLaneMixin:
             "cost": None,
             "cost_final": False,
         }
+        # The provider's cut marker survives normalization: consolidation refuses
+        # a clipped correction by usage.response_finish_reason on every lane.
+        finish_reason = getattr(first, "finish_reason", None) if first is not None else None
+        if isinstance(finish_reason, str) and finish_reason.strip():
+            usage["response_finish_reason"] = finish_reason.strip()[:64]
 
         if target.get("processing_preference"):
             from ouroboros._usage_response import processing_receipt

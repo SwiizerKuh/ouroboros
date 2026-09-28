@@ -38,7 +38,9 @@ from ouroboros.gateway.owner_settings import (
 )
 from ouroboros.onboarding_wizard import build_onboarding_html
 from ouroboros.platform_layer import is_container_env
-from ouroboros.provider_models import MINIMAX_REGION_ENDPOINTS, resolve_minimax_base_url
+from ouroboros.provider_models import (
+    MINIMAX_REGION_ENDPOINTS, ZAI_PLAN_ENDPOINTS, resolve_minimax_base_url, resolve_zai_base_url,
+)
 from ouroboros.secret_masking import (
     MCP_RESPONSE_ONLY_FIELDS,
     is_custom_secret_setting_key,
@@ -64,16 +66,6 @@ log = logging.getLogger(__name__)
 DEFAULT_PORT = int(os.environ.get("OUROBOROS_SERVER_PORT", "8765"))
 
 
-def _get_lan_ip() -> str:
-    """Return LAN IP via UDP socket trick; no packet is sent."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("192.0.2.1", 80))  # RFC 5737 TEST-NET-1, no packet sent
-            return s.getsockname()[0]
-    except OSError:
-        return ""
-
-
 def _trust_nonlocal_bind_without_password_enabled() -> bool:
     raw = os.environ.get("OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD", "")
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -96,7 +88,15 @@ def _build_network_meta(bind_host: str, bind_port: int) -> dict:
         }
     wildcard = bind_host in ("0.0.0.0", "")
     if wildcard:
-        lan_ip = "" if is_container_env() else _get_lan_ip()
+        lan_ip = ""
+        if not is_container_env():
+            # The LAN IP via the UDP socket trick; no packet is sent.
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                    s.connect(("192.0.2.1", 80))  # RFC 5737 TEST-NET-1, no packet sent
+                    lan_ip = s.getsockname()[0]
+            except OSError:
+                lan_ip = ""
     elif bind_host in ("::", "[::]"):
         # AF_INET startup cannot advertise an IPv6 wildcard LAN IP reliably.
         lan_ip = ""
@@ -539,21 +539,6 @@ def _api_owner_auto_grant_sync(request: Request, body: Any) -> JSONResponse:
     return JSONResponse({"ok": True, "enabled": enabled})
 
 
-def _provider_base_url(settings: Dict[str, Any], provider: str) -> str:
-    """The settings key a provider's base URL resolves through (shared by both routes)."""
-    if provider == "openai":
-        return str(settings.get("OPENAI_BASE_URL") or "")
-    if provider == "openai-compatible":
-        return str(settings.get("OPENAI_COMPATIBLE_BASE_URL") or "")
-    if provider == "cloudru":
-        return str(settings.get("CLOUDRU_FOUNDATION_MODELS_BASE_URL") or "")
-    if provider == "gigachat":
-        return str(settings.get("GIGACHAT_BASE_URL") or "")
-    if provider == "minimax":
-        return resolve_minimax_base_url(settings.get("MINIMAX_REGION") or "")
-    return ""
-
-
 def _active_main_route(
     settings: Dict[str, Any],
     *,
@@ -570,7 +555,15 @@ def _active_main_route(
 
     model = str(model_override or settings.get("OUROBOROS_MODEL") or _config.SETTINGS_DEFAULTS.get("OUROBOROS_MODEL") or "").strip()
     provider = provider_for_model(model)
-    base_url = _provider_base_url(settings, provider)
+    # The settings key a provider's base URL resolves through.
+    base_url_key = {"openai": "OPENAI_BASE_URL", "openai-compatible": "OPENAI_COMPATIBLE_BASE_URL",
+                    "cloudru": "CLOUDRU_FOUNDATION_MODELS_BASE_URL", "gigachat": "GIGACHAT_BASE_URL"}.get(provider)
+    if provider == "minimax":
+        base_url = resolve_minimax_base_url(settings.get("MINIMAX_REGION") or "")
+    elif provider == "zai":
+        base_url = resolve_zai_base_url(settings.get("ZAI_PLAN") or "")
+    else:
+        base_url = str(settings.get(base_url_key) or "") if base_url_key else ""
     # CW7 (v6.34.0): honour the USE_LOCAL_MAIN routing setting — a local-routed main
     # lane must report provider='local' so the Max gate consults the local n_ctx
     # (Capability Evidence local-health) instead of the remote OUROBOROS_MODEL metadata.
@@ -1200,6 +1193,17 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             if raw_cycles:
                 body = dict(body)
                 body[REVIEW_MAX_CYCLES_KEY] = normalize_review_max_cycles(raw_cycles)
+        # Optional task bounds (round limit, absolute lifetime): the same vocabulary, but a
+        # blank, zero or malformed value is refused rather than read as "no limit" or as a
+        # silent default; a valid value persists as an int or the canonical "unlimited".
+        from ouroboros.settings_scales import OPTIONAL_BOUND_LEGACY, UNLIMITED, parse_positive_or_unlimited
+        for bound_key in (key for key in OPTIONAL_BOUND_LEGACY if key in body):
+            try:
+                bound = parse_positive_or_unlimited(body.get(bound_key))
+            except (TypeError, ValueError):
+                return unsaved_error(f"{bound_key} must be a positive integer or 'unlimited'.", 400)
+            body = dict(body)
+            body[bound_key] = UNLIMITED if bound is None else bound
         # Available-subagents roster first (S4 atomicity): reviewer
         # references must validate against the roster THIS save produces —
         # not the stale process env (see the check helper below).
@@ -1266,6 +1270,10 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         if minimax_region and minimax_region not in MINIMAX_REGION_ENDPOINTS:
             return unsaved_error("MINIMAX_REGION must be global_en or cn_zh.", 400)
         current["MINIMAX_REGION"] = minimax_region
+        zai_plan = str(current.get("ZAI_PLAN") or "").strip().lower()
+        if zai_plan and zai_plan not in ZAI_PLAN_ENDPOINTS:
+            return unsaved_error("ZAI_PLAN must be payg or coding.", 400)
+        current["ZAI_PLAN"] = zai_plan
         # Generic settings saves operate on the current boot baseline. A pending
         # next-boot mode written by /api/owner/runtime-mode is preserved on disk
         # below, but never hot-applied to this process/env.

@@ -10,7 +10,6 @@ import stat
 import pathlib
 import re
 import shutil
-import subprocess
 import uuid
 import zipfile
 from contextlib import nullcontext
@@ -21,6 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, write_bytes_atomic
 from ouroboros.headless import ARTIFACT_STATUS_FAILED, ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
 from ouroboros.outcome_receipt_store import is_verification_receipts_path
+from ouroboros.task_custody import fence_publication
 from ouroboros.task_results import validate_task_id
 
 log = logging.getLogger(__name__)
@@ -708,6 +708,7 @@ def store_actor_source_bytes(
     except OSError:
         already_stored = False
     if not already_stored:
+        fence_publication()  # a closed publication generation writes no new source
         write_bytes_atomic(target, bytes(data))
     return {
         "kind": "task_source",
@@ -826,63 +827,106 @@ def persist_tool_trajectory_source(
 
 
 def collect_exact_repo_diff(repo: Any, *, include_recent_commit: bool = False) -> str:
-    """Collect the unbounded, hook-disabled repository diff for one review."""
+    """Project the unbounded, hook-disabled repository diff of ONE bytes capture.
+
+    The text is the decoded, REDACTED projection of `repo_diff_capture`, not a
+    second read of the tree, and it carries the capture's own gap disclosure: an
+    unreadable or partially captured repository reads as a stated gap, never as
+    a clean (empty) diff. The EXACT bytes stay with the capture, which this
+    legacy text-only path releases once projected.
+    """
+    from ouroboros.repo_diff_capture import capture_repo_diff, repo_diff_projection_text
+
     if not repo:
         return ""
-
-    def _git(args: list[str]) -> str:
-        try:
-            return subprocess.run(
-                ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=20,
-            ).stdout or ""
-        except (subprocess.SubprocessError, OSError):
-            return ""
-
-    diff = _git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "HEAD"])
-    untracked = _git(["ls-files", "--others", "--exclude-standard"]).strip()
-    if untracked:
-        diff += "\n# Untracked working-tree files (new, not yet committed; may include pre-existing untracked files):\n" + untracked + "\n"
-    if include_recent_commit:
-        commit = _git(["show", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "-p", "HEAD"]).strip()
-        if commit:
-            diff += "\n# Most recent commit (committed this turn):\n" + commit + "\n"
-    return diff
+    capture = capture_repo_diff(repo, include_recent_commit=include_recent_commit)
+    try:
+        return repo_diff_projection_text(capture)
+    finally:
+        capture.release()
 
 
 def materialize_repo_diff_evidence(
     repo: Any, drive_root: Any, task_id: str, *, limit: int = 20000,
-    include_recent_commit: bool = False,
+    include_recent_commit: bool = False, capture: Any = None,
 ) -> tuple[str, Dict[str, Any]]:
-    """Return a redacted exact diff or a typed cannot-verify projection."""
-    from ouroboros.observability import redact_projection
+    """Return a redacted exact diff or a typed cannot-verify projection.
+
+    ``capture`` is the ALREADY-TAKEN bytes capture of this acceptance round: the
+    packet preview and this exact source must describe the same tree, so the
+    second independent `git` read is gone. A caller without one (a direct/legacy
+    call) still gets its own single capture.
+
+    Two identities leave here, and they are not interchangeable: the EXACT bytes
+    are retained privately (`retain_private_capture`, never returned to a
+    reviewer, a log, an export or a download), and the redacted TEXT projection
+    is what the packet and the actor-readable source handle carry.
+    """
+    from ouroboros.repo_diff_capture import (
+        capture_disclosure, capture_repo_diff, repo_diff_projection, retain_private_capture,
+    )
     from ouroboros.utils import truncate_review_artifact
 
-    raw = collect_exact_repo_diff(repo, include_recent_commit=include_recent_commit)
-    if not raw:
-        return "", {"complete": False, "issue": {
+    if capture is None:
+        capture = capture_repo_diff(repo, include_recent_commit=include_recent_commit)
+    # Decoded and redacted WHOLE by the projection, before any bound below.
+    try:
+        redacted, decode_gaps = repo_diff_projection(capture)
+        disclosure = capture_disclosure(capture, decode_gaps)
+    except BaseException:
+        capture.release()
+        raise
+    meta: Dict[str, Any] = {"capture_disclosure": disclosure}
+    # Host-private forensics; deliberately NOT part of the evidence packet. Every
+    # exact-source materialization streams the bytes it projected into the
+    # private CAS (spooled sections included, so a source past the memory
+    # ceiling is kept whole), and the packet SAYS whether that happened rather
+    # than letting a digest imply a retention that never took place.
+    private_ref = retain_private_capture(drive_root, capture)
+    if private_ref.get("blob_ref"):
+        meta["private_source_ref"] = private_ref
+    disclosure["raw_retained"] = bool(private_ref.get("blob_ref"))
+    if private_ref.get("status") == "unavailable":
+        disclosure["raw_retention"] = {"status": "unavailable", "reason": "private capture retention failed"}
+    if not capture.available:
+        # An unreadable repository is unknown, never a clean tree.
+        meta.update(complete=False, issue={
+            "tool": "repo_diff", "status": "source_unavailable",
+            "reason": "repo_diff_capture_unavailable", "source_ref": {},
+            "gaps": disclosure["gaps"],
+        })
+        return redacted, meta
+    if not redacted:
+        meta.update(complete=False, issue={
             "tool": "repo_diff", "status": "source_unavailable",
             "reason": "partial_repo_diff_without_exact_source", "source_ref": {},
-        }}
-    redacted = str(redact_projection(raw).value)
-    if len(redacted) <= limit:
-        return redacted, {"complete": True}
+        })
+        return "", meta
+    if len(redacted) <= limit and disclosure["complete"]:
+        meta["complete"] = True
+        return redacted, meta
     if drive_root is not None and str(task_id or ""):
+        # The generic exact-text source writer is unchanged: it persists the
+        # REDACTED projection for the actor/reviewer, never the raw bytes.
         exact, source_ref, issue = persist_exact_text_source(
             drive_root, str(task_id), source_id="acceptance_repo_diff", text=redacted,
         )
         if exact:
-            return exact, {"complete": True, "source_ref": source_ref}
-        return truncate_review_artifact(redacted, limit=limit), {
-            "complete": False, "source_ref": source_ref, "issue": {
-                "tool": "repo_diff", **issue, "source_ref": source_ref,
-            },
-        }
-    return truncate_review_artifact(redacted, limit=limit), {
-        "complete": False, "issue": {
-            "tool": "repo_diff", "status": "source_unavailable",
-            "reason": "partial_repo_diff_without_task_source_ref", "source_ref": {},
-        },
-    }
+            meta.update(complete=disclosure["complete"], source_ref=source_ref)
+            if not disclosure["complete"]:
+                meta["issue"] = {"tool": "repo_diff", "status": "partial_source_gaps",
+                                 "reason": "repo_diff_capture_gaps", "source_ref": source_ref,
+                                 "gaps": disclosure["gaps"]}
+            return exact, meta
+        meta.update(complete=False, source_ref=source_ref, issue={
+            "tool": "repo_diff", **issue, "source_ref": source_ref,
+        })
+        return truncate_review_artifact(redacted, limit=limit), meta
+    meta.update(complete=False, issue={
+        "tool": "repo_diff", "status": "source_unavailable",
+        "reason": "partial_repo_diff_without_task_source_ref", "source_ref": {},
+    })
+    return truncate_review_artifact(redacted, limit=limit), meta
 
 
 def _matching_projection(drive_root: Any, call: Dict[str, Any]) -> Dict[str, Any]:
@@ -1184,11 +1228,13 @@ def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -
 
 
 def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any = None) -> Dict[str, Any]:
-    """Publish a verified file copy atomically; preserve any prior bytes on failure."""
+    """Publish a verified file copy atomically; preserve any prior bytes on failure. Inside a
+    ``task_custody.publication_fence`` a closed generation starts no copy."""
     source_path = pathlib.Path(source) if isinstance(source, (str, os.PathLike)) else None
     destination = pathlib.Path(destination)
     if source_path is not None and not destination.is_symlink() and source_path.resolve(strict=False) == destination.resolve(strict=False):
         return stream_artifact_file(source, expected=expected)
+    fence_publication()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{uuid.uuid4().hex}.tmp")
     try:
@@ -1261,12 +1307,13 @@ def _register_task_artifact_records(artifact_dir: pathlib.Path, records: Iterabl
     additions = {pathlib.Path(str(row.get("path") or row.get("name") or "")).name: dict(row)
                  for row in records}
 
-    def merge(current: Dict[str, Any]) -> Dict[str, Any]:
+    def merge(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         previous = current.get("artifacts") if isinstance(current.get("artifacts"), dict) else {}
         merged = merge_artifact_records(previous.values(), additions.values())
-        return {**current, "schema_version": 1, "artifacts": {
+        document = {**current, "schema_version": 1, "artifacts": {
             pathlib.Path(str(row.get("path") or row.get("name") or "")).name: row for row in merged
         }}
+        return None if document == current else document  # identical registration: no rewrite
 
     update_json_locked(artifact_dir / _ARTIFACT_MANIFEST, merge)
 
@@ -1297,6 +1344,7 @@ def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, d
     copy_artifact_file(dest, version_path, expected=previous)
     versions = sorted((p for p in version_dir.iterdir() if p.is_file()), key=lambda p: p.name)
     for stale in versions[:-_ARTIFACT_VERSION_RETENTION]:
+        fence_publication()  # a closed generation deletes no retained version, even after its backup landed
         try:
             stale.unlink()
         except OSError:
@@ -1459,9 +1507,12 @@ def copy_directory_to_task_artifacts(
     return records
 
 
-def collect_task_artifact_records(drive_root: Union[pathlib.Path, str], task_id: str) -> List[Dict[str, Any]]:
-    """Collect deliverables while excluding internal task metadata and source handles."""
-
+def collect_task_artifact_records(
+    drive_root: Union[pathlib.Path, str], task_id: str, *, measure: bool = True, strict: bool = False,
+) -> List[Dict[str, Any]]:
+    """List one store's deliverables (nested ones carry ``relpath``), never its metadata or
+    inputs. ``measure=False`` is the pure view: size from lstat, ``measured: False``, only a
+    registration's recorded identity. ``strict`` raises on unreadable material instead."""
     try:
         artifact_dir = task_artifact_dir_path(pathlib.Path(drive_root), validate_task_id(task_id), create=False)
     except ValueError:
@@ -1469,41 +1520,44 @@ def collect_task_artifact_records(drive_root: Union[pathlib.Path, str], task_id:
     records: List[Dict[str, Any]] = []
     if not artifact_dir.exists():
         return records
-    data = read_json_dict(artifact_dir / _ARTIFACT_MANIFEST) or {}
-    raw_manifest = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+    manifest_path = artifact_dir / _ARTIFACT_MANIFEST
+    data = read_json_dict(manifest_path)
+    if data is None and strict and (manifest_path.exists() or manifest_path.is_symlink()):
+        raise OSError(f"artifact registration is unreadable: {manifest_path}")
+    raw_manifest = (data or {}).get("artifacts") if isinstance((data or {}).get("artifacts"), dict) else {}
     manifest = {str(key): dict(value) for key, value in raw_manifest.items() if isinstance(value, dict)}
     artifact_root = artifact_dir.resolve(strict=False)
-    for path in sorted(p for p in artifact_dir.rglob("*") if p.is_file() and not p.is_symlink()):
-        # Internal task-metadata files (the artifact manifest and the v6.52.2 scratch manifest)
-        # are NOT deliverables — never record them as produced artifacts.
-        if path.name in (_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME):
-            continue
-        if path == artifact_dir / (_ARTIFACT_MANIFEST + ".lock"):
-            continue  # an in-flight registration lock is not a deliverable
-        # Verification receipts live beside artifacts for durable custody, but
-        # they are an append-only authority stream, not a deliverable.  Letting
-        # generic materialization register/copy this file can replace a newer
-        # canonical-only lifecycle row with a stale child replica.
-        if is_verification_receipts_path(drive_root, task_id, path):
+    members = iter_artifact_tree(artifact_dir) if strict else artifact_dir.rglob("*")
+    for path in sorted(p for p in members if p.is_file() and not p.is_symlink()):
+        # Metadata (manifests, the registration lock) and the receipt stream (its own
+        # union writer) are not deliverables.
+        if (path.name in (_ARTIFACT_MANIFEST, SCRATCH_MANIFEST_NAME) or path == artifact_dir / (_ARTIFACT_MANIFEST + ".lock")
+                or is_verification_receipts_path(drive_root, task_id, path)):
             continue
         try:
             rel_parts = path.resolve(strict=False).relative_to(artifact_root).parts
         except (OSError, ValueError):
-            continue
-        # v6.52.0 (P1): staged INPUT attachments live under attachments/ and are NOT
-        # task deliverables — never record them as produced artifacts.
-        if rel_parts and rel_parts[0] in {
-            _ATTACHMENTS_SUBDIR, _CHAT_MEDIA_SUBDIR, _SOURCE_HANDLES_SUBDIR,
-        }:
+            continue  # reached through a link: not this store's material
+        # Staged inputs, chat media and source handles are not deliverables.
+        if rel_parts and rel_parts[0] in {_ATTACHMENTS_SUBDIR, _CHAT_MEDIA_SUBDIR, _SOURCE_HANDLES_SUBDIR}:
             continue
         manifest_record = manifest.get(path.name) if path.parent == artifact_dir else None
+        nested = {"relpath": "/".join(rel_parts)} if len(rel_parts) > 1 else {}
         try:
-            record = artifact_record(path)
+            if not measure:  # an immutable registration keeps its recorded identity; nothing else is claimed
+                registered = manifest_record or {}
+                records.append({"kind": str(registered.get("kind") or "task_artifact"), "name": path.name,
+                                "path": str(path), **nested, "size": path.lstat().st_size, "measured": False,
+                                **({key: registered.get(key) for key in ("immutable", "size", "sha256")}
+                                   if registered.get("immutable") else {})})
+                continue
+            record = artifact_record(path) | nested
             if manifest_record:
                 record = merge_artifact_records([{**manifest_record, "path": str(path)}], [record])[0]
             records.append(record)
         except OSError:
-            continue
+            if strict:
+                raise
     return records
 
 

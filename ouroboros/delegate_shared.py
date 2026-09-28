@@ -10,9 +10,9 @@ so every existing reference and monkeypatch target keeps the same objects.
 
 This module also owns the external-executor family's RESULT ENVELOPE. Inside the
 family (``delegate_start``/``delegate_wait``/``delegate_cancel``/
-``delegate_answer``, their producers and their host consumers) a result is a
-native ``ToolResult``; only the four registered entries project it back to the
-``str`` handler ABI. The envelope is two additive JSON keys — ``ok`` and
+``delegate_answer``/``delegate_message``, their producers and their host
+consumers) a result is a native ``ToolResult``; only the five registered entries
+project it back to the ``str`` handler ABI. The envelope is two additive JSON keys — ``ok`` and
 ``host_code`` — written beside the domain payload, never instead of it: the
 domain ``reason`` keeps its own name and its own vocabulary, and nothing here
 renames it into ``ToolResult.code``.
@@ -64,6 +64,10 @@ _AGENT_FAULT_REASONS = frozenset({
     "configured_actor_resource_mismatch",
     "configured_actor_route_mismatch",
     "empty_prompt",
+    # The engine's typed rejection of a live message whose message_id was
+    # replayed with DIFFERENT text: the caller reused an invocation identity.
+    "idempotency_conflict",
+    "message_text_required",
     "missing_interaction_id",
     "missing_run_id",
     "payload_binding_mismatch",
@@ -133,6 +137,24 @@ def _fail(tool: str, code: str, detail: str, **extra: Any) -> ToolResult:
         "host_code": refusal_host_code(code), "detail": detail, **extra,
     }
     return delegate_result(payload)
+
+
+# The typed facts a refused snapshot provision may carry; the same keys ride the
+# refusal payload, the $0 terminal, the availability row and the START_FAILED row.
+REFUSAL_FACT_KEYS = ("cause", "holder", "waited_sec", "retryable", "retry_hint")
+
+
+def lock_busy_facts(exc: BaseException) -> Dict[str, Any]:
+    """Typed facts when a HELD worktree ops lock refused a snapshot provision (#1241):
+    who holds it and for what (``subagent_worktrees.WorktreeOpsLockBusy``), so the
+    nanny can wait for that provision instead of guessing. ``{}`` for any other cause."""
+    holder = getattr(exc, "holder", None)
+    if not isinstance(exc, TimeoutError) or holder is None:
+        return {}
+    return {"cause": "lock_busy", "holder": dict(holder), "retryable": True,
+            "waited_sec": round(float(getattr(exc, "waited_sec", 0.0) or 0.0), 1),
+            "retry_hint": "Another snapshot is being provisioned under the shared worktree "
+                          "lock; wait for it (see holder) and retry delegate_start."}
 
 
 def _emit(ctx: ToolContext, kind: str, payload: Dict[str, Any]) -> None:

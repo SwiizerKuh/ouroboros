@@ -34,9 +34,8 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import update_json_locked, utc_now_iso
 from ouroboros.task_finalization import (
-    HOST_AUTHORED_TERMINAL_ORIGINS,
-    TERMINAL_ORIGIN_HOST_SALVAGE,
-    TERMINAL_ORIGIN_MODEL_FINAL,
+    HOST_AUTHORED_TERMINAL_ORIGINS, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL,
+    artifact_store_roots, rescued_files_fact, rescued_files_sentence,
 )
 
 log = logging.getLogger(__name__)
@@ -69,16 +68,16 @@ _HOST_SALVAGE_RECEIPT = (
 
 
 def cleanup_settled_owner_mailbox(
-    drive_root: Any, task_id: str, task: Optional[Dict[str, Any]] = None,
+    drive_root: Any, task_id: str, task: Optional[Dict[str, Any]] = None, *, carry_inputs: bool = True, stop: Any = None,
 ) -> None:
-    """Release the execution mailbox only after its canonical obligations settle."""
+    """Release the execution mailbox once its canonical obligations settle and the canonical row holds its unread rows with their input closure; ``carry_inputs=False`` (the loop thread) leaves inputs to an off-loop owner, whose generation ``stop()`` fences the cleanup."""
     from ouroboros.owner_mailbox import cleanup_task_mailbox, settled_mailbox_cleanup_allowed
     from ouroboros.task_results import load_task_result
     from supervisor.queue import _task_drive_for_task
 
     durable = load_task_result(pathlib.Path(drive_root), str(task_id)) or {}
     if settled_mailbox_cleanup_allowed(durable):
-        cleanup_task_mailbox(_task_drive_for_task(task or durable, str(task_id)), str(task_id))
+        cleanup_task_mailbox(_task_drive_for_task(task or durable, str(task_id)), str(task_id), canonical_root=drive_root, carry_inputs=carry_inputs, stop=stop)
 
 
 def _registry_path(drive_root: Any) -> pathlib.Path:
@@ -693,7 +692,6 @@ def build_completed_result_event(
     note = unreconciled_runs_note(runs).lstrip("\n")
     if note and any(run not in custody for run in runs):
         custody = "\n\n".join(part for part in (note, custody) if part)
-    base_notice = str((stored or {}).get("terminal_host_notice") or "")
     event = {
         "type": "send_message",
         "chat_id": chat_id,
@@ -702,7 +700,6 @@ def build_completed_result_event(
         # A re-delivered copy that drops markdown renders as a different message.
         "format": "markdown",
         "delivery_id": delivery_id_for(tid, core_text),
-        **({"terminal_host_notice": base_notice} if base_notice else {}),
         **({"terminal_custody_notice": custody} if custody else {}),
     }
     return project_terminal_result_event(
@@ -773,20 +770,38 @@ def project_terminal_result_event(
     return event
 
 
-def enqueue_terminal_delivery(
+ENQUEUE_QUEUED = "queued"
+ENQUEUE_ALREADY_DELIVERED = "already_delivered"
+ENQUEUE_QUEUED_UNREGISTERED = "queued_unregistered"
+ENQUEUE_UNAVAILABLE = "unavailable"
+ENQUEUE_OUTCOMES = (
+    ENQUEUE_QUEUED, ENQUEUE_ALREADY_DELIVERED, ENQUEUE_QUEUED_UNREGISTERED, ENQUEUE_UNAVAILABLE,
+)
+
+
+def enqueue_terminal_delivery_outcome(
     drive_root: Any, event: Dict[str, Any], *, event_queue: Any = None,
-) -> bool:
-    """Dedupe, register as owed (idempotent), and enqueue one built event.
+) -> str:
+    """Dedupe, register as owed (idempotent), enqueue; answer one typed word.
 
     The enqueue half of the seam: safe to call after the same event was already
     registered by the owed-before-settle ordering — registration is keyed by
-    ``delivery_id`` and no-ops on a repeat.
+    ``delivery_id`` and no-ops on a repeat. Four facts a caller may branch on:
+    ``queued`` (owed row written, live send queued), ``already_delivered``
+    (this id already went out — nothing is owed, nothing failed),
+    ``queued_unregistered`` (the live send is queued but the owed row could not
+    be written: a crash before the send loses it — the ``register`` seam already
+    emitted its typed event), ``unavailable`` (no event, or the queue refused).
+    A boolean collapsed the first two with the last two; a receipt consumer read
+    an idempotent repeat as a failure and a lost owed row as durable.
     """
     did = str((event or {}).get("delivery_id") or "")
     tid = str((event or {}).get("task_id") or "")
-    if not event or already_delivered(pathlib.Path(drive_root), did):
-        return False
-    register_pending_delivery(pathlib.Path(drive_root), event)
+    if not event:
+        return ENQUEUE_UNAVAILABLE
+    if already_delivered(pathlib.Path(drive_root), did):
+        return ENQUEUE_ALREADY_DELIVERED
+    registered = register_pending_delivery(pathlib.Path(drive_root), event)
     try:
         if event_queue is None:
             from supervisor import workers
@@ -795,8 +810,18 @@ def enqueue_terminal_delivery(
         event_queue.put(dict(event))
     except Exception:
         log.warning("terminal-delivery enqueue failed for %s", tid, exc_info=True)
-        return False
-    return True
+        return ENQUEUE_UNAVAILABLE
+    return ENQUEUE_QUEUED if registered else ENQUEUE_QUEUED_UNREGISTERED
+
+
+def enqueue_terminal_delivery(
+    drive_root: Any, event: Dict[str, Any], *, event_queue: Any = None,
+) -> bool:
+    """Boolean projection of ``enqueue_terminal_delivery_outcome``: was a live
+    send queued? (An already-delivered id and a refused queue both read False —
+    callers that must tell those apart use the typed outcome.)"""
+    outcome = enqueue_terminal_delivery_outcome(drive_root, event, event_queue=event_queue)
+    return outcome in (ENQUEUE_QUEUED, ENQUEUE_QUEUED_UNREGISTERED)
 
 
 def deliver_completed_result(
@@ -1255,6 +1280,7 @@ def _persist_cancel_receipt(
     preserved_path: str, preview_omitted: int,
     children: Optional[List[Dict[str, Any]]] = None,
     unreconciled_runs: Optional[List[str]] = None,
+    reason_code: str = "", files_rescued: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Q5=A: the technical stop facts live in the task DETAILS panel.
 
@@ -1266,6 +1292,7 @@ def _persist_cancel_receipt(
     digest for a cascade root. Never creates the result file (a later full
     write would clobber a block-only row) and never clobbers previously
     persisted non-empty facts with an emptier rebuild. Fail-soft.
+    ``files_rescued`` (TZ-2 C2) is the typed stat-only store count the receipt text speaks.
     """
     tid = str(task_id or "")
     try:
@@ -1283,7 +1310,10 @@ def _persist_cancel_receipt(
                 else {"path": "", "preserved": False}
             ),
             "ts": utc_now_iso(),
+            **({"files_rescued": dict(files_rescued)} if files_rescued else {}),
         }
+        if str(reason_code or ""):
+            block["reason_code"] = str(reason_code)  # TZ-2 C1: the typed rail beside its sentence
         rows = [
             {"task_id": str(c.get("task_id") or ""),
              "outcome": str(c.get("outcome") or ""),
@@ -1379,6 +1409,7 @@ def build_unreviewed_salvage_event(
     unreconciled_runs: Optional[List[str]] = None,
     settled_status: str = "",
     delivery_id: str = "",
+    reason_code: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Build (without sending) the one salvage/terminal chat message.
 
@@ -1411,12 +1442,19 @@ def build_unreviewed_salvage_event(
     "answer"), and the technical facts (path/sha256/bytes/children digest)
     live in the durable ``cancel_receipt`` block on the task result — the
     details panel — not in chat.
+    ``reason_code`` (TZ-2 C1): the TYPED rail; with an empty ``outcome`` the owner
+    sentence comes from TASK_CAUSE_PHRASES here, and the code rides the receipt, not the prose.
+    TZ-2 C2: text and receipt state the files rescued (positive/zero/unknown, stat-only walk, no hashes).
     """
     from ouroboros.task_results import STATUS_COMPLETED
 
     tid = str(task_id or "").strip()
     if not tid:
         return None
+    code = str(reason_code or "").strip()
+    if code and not str(outcome or "").strip():
+        from ouroboros.project_dialogue import TASK_CAUSE_PHRASES
+        outcome = f"stopped by the supervisor. {TASK_CAUSE_PHRASES.get(code, code)}"
     task_row = task if isinstance(task, dict) else {}
     chat_id = lineage_chat_id(pathlib.Path(drive_root), task_row, tid)
     if not chat_id:
@@ -1431,21 +1469,19 @@ def build_unreviewed_salvage_event(
     if str(settled_status or "").strip().lower() == STATUS_COMPLETED:
         # Completion-wins (owner 4=A): the kept result is the real answer, not a
         # salvage — but it still bypassed the normal delivery path, so say so.
-        lines = [
-            f"✅ Task {tid} {outcome_text}. Its completed result is preserved below."
-            + descendants,
-        ]
+        lines = [f"✅ Task {tid} {outcome_text}. Its completed result is preserved below." + descendants]
     else:
         lines = [
             f"⚠️ Task {tid} was {outcome_text}. Below is the last persisted "
             "intermediate model message, preserved WITHOUT review (salvaged "
             "best-effort; NOT a final answer)." + descendants,
         ]
-    if preview:
-        lines += ["", preview, "", _preview_note_line(preserved_path, omitted)]
-    else:
-        lines += ["", "(no salvageable agent output was found for this task)"]
-    disclosure_lines: List[str] = []
+    lines += ["", preview, "", _preview_note_line(preserved_path, omitted)] if preview else [
+        "", "(no salvageable agent output was found for this task)"]
+    # TZ-2 C2: "no salvageable text" never implies "no files": the stat-only store count
+    # rides the mutable disclosure (never the content-derived identity), hashes not computed.
+    rescued = rescued_files_fact(tid, artifact_store_roots(drive_root, tid, task=task_row))
+    disclosure_lines: List[str] = ["", rescued_files_sentence(rescued)]
     if unreconciled_runs:
         # GR3-7: an audit-failure marker means run state is UNKNOWN — a
         # different honest sentence than "these named runs stayed open".
@@ -1487,9 +1523,9 @@ def build_unreviewed_salvage_event(
         settled_status=str(settled_status or ""), outcome=outcome_text,
         delivery_id=did, preserved_path=str(preserved_path or ""),
         preview_omitted=omitted, children=children,
-        unreconciled_runs=unreconciled_runs,
+        unreconciled_runs=unreconciled_runs, reason_code=code, files_rescued=rescued,
     )
-    return {
+    event = {
         "type": "send_message",
         "chat_id": chat_id,
         "task_id": tid,
@@ -1503,6 +1539,9 @@ def build_unreviewed_salvage_event(
         "delivery_id": did,
         "ts": utc_now_iso(),
     }
+    if code:
+        event["reason_code"] = code
+    return event
 
 
 def deliver_unreviewed_salvage(
@@ -1517,6 +1556,7 @@ def deliver_unreviewed_salvage(
     unreconciled_runs: Optional[List[str]] = None,
     settled_status: str = "",
     delivery_id: str = "",
+    reason_code: str = "",
     event_queue: Any = None,
 ) -> bool:
     """Enqueue ONE unreviewed-salvage chat message for a cancelled/reaped task.
@@ -1534,7 +1574,7 @@ def deliver_unreviewed_salvage(
         pathlib.Path(drive_root), task, task_id,
         outcome=outcome, salvaged_text=salvaged_text, preserved_path=preserved_path,
         children=children, unreconciled_runs=unreconciled_runs,
-        settled_status=settled_status, delivery_id=delivery_id,
+        settled_status=settled_status, delivery_id=delivery_id, reason_code=reason_code,
     )
     if event is None:
         # GR3-1c: a terminal outcome with NO resolvable lineage chat records a

@@ -171,6 +171,7 @@ def _record_forced_finalization(
         "current_evidence_revision": current_revision,
         "evidence_current": bool(
             candidate is not None
+            and bool(current_fingerprint) and not binding.get("stale_evidence")
             and candidate.evidence_fingerprint == current_fingerprint
         ),
         "acceptance_status": str(binding.get("acceptance_status") or "unaccepted"),
@@ -387,8 +388,8 @@ def _maybe_enforce_child_absorption_gate(
         prompt=(
             "[FINALIZE_WITH_UNABSORBED_CHILDREN]\n"
             "You still have child results without exact dispositions and already received one "
-            "child-absorption reminder. Produce an honest best-effort final answer now; name the "
-            "unabsorbed or unfinished children explicitly. Current child state: "
+            "child-absorption reminder. Produce an honest best-effort final answer now that says "
+            "what remains unabsorbed or unfinished; the exact child state is: "
             f"{_undecided_children_listing(undecided)}."
         ),
         fallback_text="⚠️ Finalized best-effort with undispositioned child results.",
@@ -468,6 +469,17 @@ def _run_forced_children_acceptance(
         tools_ctx._forced_undispositioned_children = None
 
 
+def _plan_gate_identity(decision: Dict[str, Any]) -> str:
+    """Typed identity of the plan-review gate as the mind was last TOLD it.
+    Existing decision fields only — never the rendered English, which cannot tell
+    two different waves apart (astra F3)."""
+    return "|".join(str(decision.get(key) or "") for key in (
+        "status", "allow", "closed", "outcome", "enforcement", "cycles_paid",
+        "custody_pending", "reviewer_slots_degraded", "review_late_result_pending",
+        "quorum_unreachable", "owner_hurry_local_advisory",
+    ))
+
+
 def _enforce_swarm_actions(
     content: str,
     messages: List[Dict[str, Any]],
@@ -475,18 +487,55 @@ def _enforce_swarm_actions(
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
 ) -> bool:
-    """Hold normal finalization while blocking plan work is open."""
+    """Hold normal finalization while blocking plan work is open, and hand the mind
+    ONE fact when a hold it was told about was released behind its back (owner Q4=A).
+
+    The marker advances ONLY on the two paths that actually append a message to
+    ``messages`` — the hold reminder and the release note — so it records what
+    entered the MIND's context, not what this gate observed. Every other gate
+    transition already reaches the mind by its own route and must not buy a round:
+    a settled reviewer slot arrives as a ``[System task message]`` through the task
+    mailbox (``plan_review_collect.announce_released_settlement`` ->
+    ``loop_round_limits`` drain), a rail release rides the forced prompt's typed
+    facts, and ``closed``/``author_stopped``/``cycles_exhausted`` are the mind's own
+    ``plan_task`` results. The one residual is the owner's hurry, which the HQ1
+    no-chat contract forbids putting into ``messages``
+    (``loop_round_limits.py``) — that is the only release this fires on."""
 
     decision = _loop()._force_plan_decision(tools._ctx, llm_trace)
     if decision.get("required"):
         llm_trace["force_plan_decision"] = decision
+    identity = _plan_gate_identity(decision) if decision.get("required") else ""
+    told = str(getattr(tools._ctx, "_plan_gate_told_identity", "") or "")
     if decision.get("allow"):
-        return False
+        if not (
+            told and identity and identity != told
+            and not decision.get("closed")
+            and decision.get("status") != "author_stopped"
+            and decision.get("owner_hurry_local_advisory")
+            and not getattr(tools._ctx, "_plan_gate_release_told", False)
+        ):
+            return False
+        tools._ctx._plan_gate_told_identity = identity
+        tools._ctx._plan_gate_release_told = True
+        if content.strip():
+            messages.append({"role": "assistant", "content": content})
+        _loop()._append_or_merge_user_message(
+            messages,
+            "[PLAN_REVIEW_RELEASED]\n"
+            "The plan-review hold reported to you earlier is released by the owner's hurry "
+            "request, and the review is still open.\n" + _FACTS_LEAD + "\n"
+            + _plan_gate_facts(decision),
+        )
+        llm_trace["reasoning_notes"].append("Released plan-review gate reported before final response.")
+        emit_progress("Plan-review gate released before final response.")
+        return True
     if content.strip():
         messages.append({"role": "assistant", "content": content})
     reminder = _loop()._force_plan_reminder(decision)
     _loop()._append_or_merge_user_message(messages, reminder)
     llm_trace["reasoning_notes"].append(reminder)
+    tools._ctx._plan_gate_told_identity = identity
     emit_progress("Plan-review action required before final response.")
     return True
 
@@ -498,13 +547,190 @@ _FORCED_BEST_EFFORT_TAIL = (
 )
 
 
+_FACTS_LEAD = (
+    "Typed facts this task already records about this finalization. They stay recorded "
+    "whether or not you mention them; your own answer is where they are said, in your own "
+    "words — this block is data, not wording to reuse."
+)
+
+
+def _plan_gate_facts(decision: Dict[str, Any]) -> str:
+    """One ``key=value`` line for an open plan-review gate, built from the decision
+    dict's own typed fields (never ``plan_review_disclosure``'s owner-facing English:
+    BIBLE P5/P6 — the host does not put a template in the mind's mouth).
+
+    Only fields that do NOT depend on ``hard_rail`` are emitted, so the same line is
+    true on the normal rail and on every forced rail. ``owner_hurry_local_advisory``/
+    ``configured_enforcement`` carry the accurate hurry-vs-advisory attribution that
+    the recorded notice does not distinguish."""
+    if not decision.get("required") or decision.get("closed"):
+        return ""
+    parts = ["plan_review_open=true"]
+    if decision.get("outcome"):
+        parts.append(f"plan_review_outcome={decision['outcome']}")
+    if decision.get("enforcement"):
+        parts.append(f"plan_review_enforcement={decision['enforcement']}")
+    if decision.get("decision_authority"):
+        parts.append(f"decision_authority={decision['decision_authority']}")
+    if decision.get("owner_hurry_local_advisory"):
+        parts.append("owner_hurry_local_advisory=true")
+        parts.append(f"configured_enforcement={decision.get('configured_enforcement') or 'blocking'}")
+    for key in (
+        "reviewer_slots_degraded", "custody_pending",
+        "review_late_result_pending", "quorum_unreachable",
+    ):
+        if decision.get(key):
+            parts.append(f"{key}=true")
+    if decision.get("cycles_paid"):
+        parts.append(f"cycles_paid={decision['cycles_paid']}")
+    return " ".join(parts)
+
+
+def _forced_state_facts(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> str:
+    """Hand the ONE forced model call the same limitations this rail will record beside
+    its answer — as typed facts, not as the owner-facing notice.
+
+    Never raises: a forced answer outranks its own annotation."""
+    try:
+        tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+        projected = llm_trace.get("force_plan_decision")
+        decision = (
+            projected if isinstance(projected, dict)
+            else (_loop()._force_plan_decision(tools_ctx, llm_trace) if tools_ctx is not None else {})
+        )
+        lines = [line for line in (_plan_gate_facts(decision),) if line]
+        undecided = _undispositioned_children(ctx)
+        if undecided:
+            lines.append(
+                f"children_undecided={len(undecided)}: {_undecided_children_listing(undecided)}"
+            )
+        deferred = [
+            child for child in _direct_child_results(ctx)
+            if _child_disposition_state(child) == "deferred"
+        ]
+        if deferred:
+            lines.append(
+                f"children_deferred={len(deferred)}: {_undecided_children_listing(deferred)}"
+            )
+        candidate = _loop()._live_delivery_candidate(ctx)
+        current = str(getattr(tools_ctx, "_delivery_evidence_fingerprint", "") or "")
+        if (candidate is not None and current and candidate.evidence_fingerprint
+                and candidate.evidence_fingerprint != current):
+            lines.append("retained_answer_predates_current_evidence=true")
+        if not lines:
+            return ""
+        return "\n\n[TASK_STATE_FACTS]\n" + _FACTS_LEAD + "\n" + "\n".join(lines)
+    except Exception:
+        log.debug("Forced task-state facts unavailable", exc_info=True)
+        return ""
+
+
 def _prepare_forced_prompt(
     ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
 ) -> str:
     _loop()._drain_forced_owner_directives(ctx, llm_trace)
     _loop()._finalize_forced_services(ctx, llm_trace)
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace) + _forced_subject_prompt(ctx, llm_trace)
+    # The typed facts sit BEFORE the acceptance observation so that one-shot block
+    # stays the tail of the message (the prompt-cache prefix rule).
+    return (
+        prompt
+        + _loop()._forced_delegation_note(tools_ctx, llm_trace)
+        + _forced_state_facts(ctx, llm_trace)
+        + _presence_forced_contract(ctx, tools_ctx)
+        + _forced_subject_prompt(ctx, llm_trace)
+    )
+
+
+def _presence_forced_contract(ctx: _RoundLimitContext, tools_ctx: Any) -> str:
+    """Arm a Presence task's ONE forced call to declare its outward delivery apart from its record.
+
+    The forced answer is the internal record (owner, review, task result); what the
+    conversation receives is only the nested ``presence_finish`` declaration. Until a
+    valid declaration arrives with a model-final answer the arm stays ``missing``, so
+    no untyped internal prose becomes Presence speech (owner Q4). Not a delivery receipt.
+    Only a context whose final becomes a Presence result is armed: the host ceiling AND
+    the Presence metadata the pipeline keys that result on. A delegated child inherits
+    the ceiling with its contract, but it answers its parent, not a conversation.
+    """
+    contract = getattr(tools_ctx, "task_contract", None)
+    metadata = getattr(tools_ctx, "task_metadata", None)
+    presence = metadata.get("presence") if isinstance(metadata, dict) else None
+    if not (isinstance(contract, dict) and isinstance(contract.get("capability_ceiling"), dict)
+            and isinstance(presence, dict)):
+        return ""
+    tools_ctx._presence_forced_declaration = {"status": "missing", "reason": "no presence_finish declaration"}
+    tools_ctx._presence_forced_pending = None
+    try:
+        from ouroboros.presence_context import presence_send_facts
+        from ouroboros.tool_access import canonical_data_root
+
+        # Receipts live on the canonical root; a forked execution drive holds none.
+        sent = presence_send_facts(canonical_data_root(tools_ctx), ctx.task_id, presence)
+    except Exception:
+        sent = "unknown (receipts unreadable)"
+    handoff = getattr(tools_ctx, "_swarm_handoff_attempt", None)
+    scheduled = isinstance(handoff, dict) and str(handoff.get("status") or "") == "scheduled"
+    return (
+        "\n\n[PRESENCE_DELIVERY]\n"
+        "This task answers a Presence conversation. Your answer is its internal record for the "
+        "owner and review; the people in the conversation receive only what you declare. Return "
+        "exactly one JSON object and no other text: "
+        '{"delivery_control":"replace","full_answer":"<complete internal record>",'
+        '"presence_finish":{"outcome":"message","message":"<new text for the conversation>"}}'
+        + (' ("delivery_control":"keep" without full_answer keeps the current answer as the record)'
+           if _loop()._live_delivery_candidate(ctx) is not None else "")
+        + ". Outcomes: message = new useful speech on their subject, an honest partial included; "
+        "silent = nothing new needs saying; tool_delivered = the substantive result already reached "
+        "them through a transport tool; deferred = acknowledge work that was actually scheduled"
+        + (" (it was)" if scheduled else " (none was)") + ". Keep internal facts in full_answer; "
+        "the host never forwards that record automatically. You decide what, if anything, to say "
+        "in presence_finish.message, including relevant limitations. "
+        "An early acknowledgement is not the promised result and an uncertain send may not have "
+        "landed. Without a valid presence_finish nothing new is sent. Sends confirmed for this task "
+        f"so far: {sent}."
+    )
+
+
+def _read_presence_declaration(tools_ctx: Any, extracted: str) -> None:
+    """Record the nested ``presence_finish`` of an armed forced body without rewriting that body.
+
+    The resolver keeps reading the original bytes (``envelope_keys`` admits this one
+    key), so the parser's duplicate-key evidence still reaches every rail, the
+    acceptance subject included. A declaration is valid only in an envelope that
+    repeats no key anywhere. Each read records its non-speaking verdict at once; a
+    valid declaration speaks only once its answer becomes the model final.
+    """
+    from ouroboros.loop_delivery import _parse_delivery_control_object
+    from ouroboros.observability import strip_protocol_fence
+    from ouroboros.tools.presence import PRESENCE_OUTCOMES
+
+    tools_ctx._presence_forced_pending = None
+    tools_ctx._presence_forced_declaration = {"status": "missing", "reason": "no presence_finish declaration"}
+    parsed, duplicate = _parse_delivery_control_object(strip_protocol_fence(extracted))
+    if not duplicate and (not isinstance(parsed, dict) or "presence_finish" not in parsed):
+        return
+    value = parsed.get("presence_finish") if isinstance(parsed, dict) else None
+    reason = ""
+    if duplicate or getattr(parsed, "has_duplicate_keys", False):
+        reason = "the forced envelope repeats a key"
+    elif not isinstance(value, dict) or not set(value) <= {"outcome", "message"} \
+            or value.get("outcome") not in PRESENCE_OUTCOMES or not isinstance(value.get("message", ""), str):
+        reason = "presence_finish must be one {outcome, message} object with a known outcome"
+    else:
+        outcome, message = value["outcome"], value.get("message", "").strip()
+        handoff = getattr(tools_ctx, "_swarm_handoff_attempt", None)
+        if outcome == "message" and not message:
+            reason = "message needs nonblank conversational text"
+        elif outcome == "silent" and message:
+            reason = "silent carries no text"
+        elif outcome == "deferred" and not (isinstance(handoff, dict) and handoff.get("status") == "scheduled"):
+            reason = "deferred needs work that was actually scheduled"
+    if reason:
+        tools_ctx._presence_forced_declaration = {"status": "invalid", "reason": reason}
+    else:
+        tools_ctx._presence_forced_pending = {
+            "status": "declared", "outcome": value["outcome"], "message": value.get("message", "").strip()}
 
 
 def _forced_subject_prompt(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> str:
@@ -714,15 +940,21 @@ def _publish_stale_forced_candidate(
     tools = getattr(ctx, "tools", None)
     if tools is None:
         return None
-    current_revision, _current_fingerprint = _loop()._delivery_evidence_state(
+    current_revision, current_fingerprint = _loop()._delivery_evidence_state(
         tools, ctx, llm_trace,
     )
     disclosure = (
         "\n\n⚠️ STALE-EVIDENCE NOTICE — RESUME REQUIRED (host): The preserved "
-        "answer above was produced before newer task evidence reached the loop. "
-        "It has not been regenerated or accepted against that newer evidence and "
-        "does not claim to incorporate it. Resume the task to produce and review "
-        "a complete answer against the latest evidence."
+        + ("answer above was produced before newer task evidence reached the loop. "
+           "It has not been regenerated or accepted against that newer evidence and "
+           "does not claim to incorporate it. "
+           if current_fingerprint else
+           # UNKNOWN evidence: the host could not re-read it, so it is not claimed
+           # newer — only unverified. Typed, never a crash or an approval.
+           "answer above rests on task evidence the host could no longer read. "
+           "It has not been re-verified or accepted against the current evidence and "
+           "does not claim to reflect it. ")
+        + "Resume the task to produce and review a complete answer against the latest evidence."
     )
     set_terminal_host_notice(ctx.accumulated_usage, suffix, disclosure)
     candidate = _loop()._replace_delivery_candidate(
@@ -770,6 +1002,11 @@ def _forced_fallback_result(
         if tool_ctx is not None else ""
     )
     suffix = plan_suffix + _loop()._forced_orphan_note(ctx)
+    # Every rail that DISCLOSES types the fact: a host-notice fallback used to state
+    # the open review in prose while nothing typed carried it. Absent = not open: a
+    # clean result carries no key (pinned usage shapes).
+    if plan_suffix:
+        ctx.accumulated_usage["terminal_plan_review_open"] = True
     set_terminal_host_notice(ctx.accumulated_usage, suffix)
     live_candidate = _loop()._live_delivery_candidate(ctx)
     fallback_is_retained_model_text = (
@@ -782,10 +1019,7 @@ def _forced_fallback_result(
             candidate.model_text or candidate.full_text if provider_terminal else
             candidate.full_text
         )
-        ctx.accumulated_usage.update(
-            terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
-            terminal_plan_review_open=bool(plan_suffix),
-        )
+        ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
         if composed != candidate.full_text:
             candidate = _publish_model_forced_candidate(
                 ctx, llm_trace, composed, reason_code,
@@ -870,16 +1104,29 @@ def _resolve_forced_delivery_control(
     """Resolve forced control; returns text, degradation, retained, replaced."""
     if tools_ctx is None or not extracted:
         return extracted, "", False, False
+    presence_armed = isinstance(getattr(tools_ctx, "_presence_forced_declaration", None), dict)
+    if presence_armed:
+        _read_presence_declaration(tools_ctx, extracted)
     candidate = getattr(tools_ctx, "_delivery_candidate", None)
-    armed = bool(getattr(tools_ctx, "_delivery_control_required", False)) or (
+    armed = presence_armed or bool(getattr(tools_ctx, "_delivery_control_required", False)) or (
         isinstance(candidate, _loop().DeliveryCandidate)
         and _loop()._delivery_replace_required(candidate)
     )
     resolved, retained, degraded, consumed, replaced = (
         _loop()._resolve_forced_delivery_control_body(
             extracted, candidate, armed=armed,
+            envelope_keys=("presence_finish",) if presence_armed else (),
         )
     )
+    if presence_armed and isinstance(tools_ctx._presence_forced_pending, dict):
+        from ouroboros.loop_delivery import _parse_delivery_control_body
+
+        parsed, _, _ = _parse_delivery_control_body(extracted)
+        if degraded or not (isinstance(parsed, dict) and parsed.get("delivery_control") in {"keep", "replace"}):
+            # A declaration cannot speak unless its outer control positively chose the final record.
+            tools_ctx._presence_forced_pending = None
+            tools_ctx._presence_forced_declaration = {
+                "status": "invalid", "reason": "the delivery-control envelope was rejected"}
     if consumed:
         tools_ctx._delivery_control_required = False
         from ouroboros.loop_delivery import _parse_delivery_control_body, apply_delivery_subject_decision
@@ -1047,10 +1294,13 @@ def _forced_final_answer(
             _loop()._force_plan_disclosure(tools_ctx, llm_trace, forced_reason=reason_code)
             if tools_ctx is not None else ""
         )
-        ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
+        if plan_suffix:  # absent = not open: a clean result carries no key (pinned usage shapes)
+            ctx.accumulated_usage["terminal_plan_review_open"] = True
         set_terminal_host_notice(ctx.accumulated_usage, plan_suffix, _loop()._forced_orphan_note(ctx))
         full_text = extracted
         ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
+        if isinstance(getattr(tools_ctx, "_presence_forced_pending", None), dict):
+            tools_ctx._presence_forced_declaration = tools_ctx._presence_forced_pending
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
             degraded_reason=control_degraded,

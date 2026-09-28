@@ -224,6 +224,15 @@ def _route_project_chat_to_running_task(
                 )
                 if live_meta is None and not still_pending:
                     return ""
+                # A worker may remain RUNNING to finish paid post-work after its
+                # answer/result settled. Its solve loop no longer drains this
+                # mailbox; accepting an owner follow-up here would label it
+                # delivered, then terminal cleanup would erase it unread. One
+                # predicate with the quiz ingress (TZ-2 D15).
+                from ouroboros.owner_mailbox import mailbox_drain_ended
+
+                if mailbox_drain_ended(task_drive, tid):
+                    return ""
                 # Phase A: a task whose cancellation is PENDING must not accept a
                 # new owner message — same refusal the steer_task route makes,
                 # checked inside this admission transaction. Falling through to
@@ -248,6 +257,9 @@ def _route_project_chat_to_running_task(
                     else None
                 ),
                 attachment_manifest=staged_manifest if staged_manifest else None,
+                late_answer=(
+                    task_metadata.get("late_answer") if isinstance(task_metadata, dict) else None
+                ),
             ):
                 return ""
             message_written = True
@@ -550,7 +562,8 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         task_metadata = {**(task_metadata or {}), "origin_suppressed": True}
     # Owner Surface Fact channel fallback: a non-web ingress (telegram/skill
     # transports) carries no browser observables, but its channel IS the
-    # surface fact. Host-stamped here, never overwriting a real descriptor;
+    # surface fact, with the common ingress receipt stamp (``received_at``,
+    # ``enqueue_local_message``). Host-stamped here, never overwriting a real descriptor;
     # source=="web" stays an honest absence (an old SPA sends no fact), and a
     # synthetic A2A chat (negative id) is machine traffic — no owner sent it,
     # so it must never wear an owner_client fact.
@@ -562,7 +575,8 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         and not _is_a2a(chat_id)
         and not isinstance(task_metadata.get("client_surface"), dict)
     ):
-        task_metadata = {**task_metadata, "client_surface": {"channel": _ingress_source}}
+        received = {"received_at": str(incoming["received_at"])} if incoming.get("received_at") else {}
+        task_metadata = {**task_metadata, "client_surface": {"channel": _ingress_source, **received}}
     if task_metadata.get("force_plan"):
         from supervisor.worker_chat_lane import owner_conversation_admitted
         from supervisor.state import budget_remaining, load_state

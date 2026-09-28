@@ -68,7 +68,9 @@ def _bounded(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for row in rows[-_TIMELINE_TAIL:]:
         item = {"type": _label(row.get("type")), "title": _label(row.get("title")),
                 "severity": _label(row.get("severity"))}
-        for key in ("attemptId", "harnessId"):
+        # ``messageId``/``outcome`` ride the engine's ``message.*`` rows: the
+        # receipts a recovered nanny reconciles a delegate_message against (A26).
+        for key in ("attemptId", "harnessId", "messageId", "outcome"):
             if isinstance(row.get(key), str) and row[key]:
                 item[key] = _label(row[key])
         if row.get("textKind") in _TEXT_KINDS and isinstance(row.get("detail"), str):
@@ -622,6 +624,19 @@ def emit(ctx: Any, run_id: str, advance: _Advance, *,
         log.debug("delegated progress emit failed", exc_info=True)
 
 
+def paused_note(pending_interactions: Optional[List[Dict[str, Any]]]) -> str:
+    """The note of a run PAUSED on its own question(s): never "stuck" (owner 7=A /
+    F13). Shared by the per-window payload and the supervising wake, which keeps it
+    when it drops the per-tick keep-watching/cancel note."""
+    return ("The run is alive and PAUSED on the question(s) it already asked "
+            "(waiting_on_user; see pending_interactions). Decide: answer with "
+            "delegate_answer, escalate an above-authority question with the "
+            "escalate verb (parent-first; the reply reaches your mailbox on a "
+            "later round), or "
+            f"keep waiting (call again) — {waiting_expiry_clause(pending_interactions)}. "
+            "Do not cancel a run merely because it asked a question.")
+
+
 def window_payload(
     *,
     run_id: str,
@@ -658,20 +673,20 @@ def window_payload(
         "max_seconds": max_seconds,
         "waiting_on_user": waiting_on_user,
     }
+    if waiting_on_user:
+        # The re-wait of a question the model already saw rides the same flat route
+        # fact as the immediate waiting payload (whose note carries the cost clause;
+        # this payload is measured into a budget its own note already reserves).
+        from ouroboros.delegate_interactions import SAME_SESSION_CONTINUATION
+
+        payload["continuation"] = SAME_SESSION_CONTINUATION["continuation"]
     if not seen.advances:
         payload["reason"] = "non_terminal_and_no_new_session_events_within_wait_window"
         # A run PAUSED on its own question is not "stuck" (owner 7=A / F13): the
         # generic delegate_cancel hint invited cancelling a run that is simply
         # waiting to be answered. The waiting state gets its own note.
         payload["note"] = (
-            ("The run is alive and PAUSED on the question(s) it already asked "
-             "(waiting_on_user; see pending_interactions). Decide: answer with "
-             "delegate_answer, escalate an above-authority question with the "
-             "escalate verb (parent-first; the reply reaches your mailbox on a "
-             "later round), or "
-             f"keep waiting (call again) — {waiting_expiry_clause(pending_interactions)}. "
-             "Do not cancel a run merely because it asked a question.")
-            if waiting_on_user else
+            paused_note(pending_interactions) if waiting_on_user else
             ("The run is alive but silent. Decide: keep waiting (call again), "
              "or delegate_cancel if it is stuck."))
         _fitted_pending(payload, list(pending_interactions or []), budget)

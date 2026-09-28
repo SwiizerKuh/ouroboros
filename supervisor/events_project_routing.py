@@ -12,6 +12,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
+from ouroboros.dialogue_provenance import presence_root_carrier
 from ouroboros.task_results import STATUS_FAILED, STATUS_SCHEDULED, write_task_result
 from ouroboros.utils import utc_now_iso
 
@@ -497,6 +498,7 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                 else "unconfirmed"
             )
             transfer = outcome.pop("force_plan_transfer", None)
+            carrier = presence_root_carrier(evt, task_contract=evt.get("task_contract"))
             stored = write_task_result(
                 ctx.DRIVE_ROOT,
                 str(outcome.get("task_id") or task_id),
@@ -527,6 +529,10 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                     else "Task is scheduled, but its owner-facing routing receipt was not confirmed."
                 ),
                 attachment_manifest=list(outcome.get("attachment_manifest") or []),
+                # A Presence promotion's host-carried provenance is canonical from
+                # admission, so its binding finds, polls and controls the work while
+                # it is still queued (the worker's running write keeps the same value).
+                **({"metadata": carrier, "source": "presence_promote"} if carrier else {}),
             )
             admission = stored.get("promotion_admission") if isinstance(stored, dict) else {}
             if (
@@ -544,6 +550,9 @@ def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, An
                     "status": "unconfirmed",
                     "reason": str(receipt.get("reason") or "routing_receipt_persist_failed"),
                 }
+            from ouroboros.project_handoff import enqueue_project_handoff
+
+            enqueue_project_handoff(ctx.DRIVE_ROOT, str(outcome.get("task_id") or task_id))
             _publish_routing_ack(
                 ctx,
                 evt,
@@ -732,6 +741,10 @@ def _handle_ensure_project_scope(evt: Dict[str, Any], ctx: Any) -> None:
     if not isinstance(outcome, dict):
         outcome = {"status": "unconfirmed", "reason": "handler_returned_no_outcome"}
     target = str(outcome.get("project_id") or evt.get("project_id") or "")
+    if outcome.get("status") == "delivered":
+        from ouroboros.project_handoff import enqueue_project_handoff
+
+        enqueue_project_handoff(ctx.DRIVE_ROOT, str(evt.get("task_id") or ""))
     label = ""
     try:
         from ouroboros.projects_registry import get_project

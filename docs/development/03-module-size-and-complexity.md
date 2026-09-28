@@ -40,7 +40,9 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
 - Runtime Python function/method count stays under
   `ouroboros/review.py::MAX_TOTAL_FUNCTIONS` (the same runtime-only iterator;
   the module gates include tests/devtools) — a high-water alarm with ample
-  headroom, raised only with a one-line campaign rationale in the same commit.
+  headroom, raised only with a one-line campaign rationale in the same commit
+  (the current 10500 ceiling came with the exact budget-pause lifecycle,
+  owner-approved within 10%, after that change's own single-caller inlines).
 - Enforcement: the OFFICIAL repository's CI runs the dedicated `size_ratchet`
   pytest lane as a blocking step (`OURO_SIZE_RATCHET_BASE_REF` names the event
   base; lane placement and base fallback: ARCHITECTURE §8 "CI topology").
@@ -123,11 +125,15 @@ the answer.
 - **House precedents — reuse these shapes:** archive-aware chat log rotation
   (`supervisor/state.py::rotate_chat_log_if_needed`); the compact
   `containment_faults.jsonl` projection maintained beside an unbounded event
-  log (`ouroboros/delegate_custody.py`); one shared custody replay per context
-  build and per terminal audit (`delegate_terminal.custody_audit_snapshot`,
-  consumed by `context_health.build_health_invariants` and the terminal
-  audit) — sharing ONE traversal bounds the multiplier, not the scan, so that
-  read stays O(history) until a compact projection replaces it; the
+  log (`ouroboros/delegate_custody.py`); the process-local custody row memo
+  behind `delegate_custody.custody_rows` (`ouroboros/delegate_custody_memo.py`:
+  an ordered inode/size/mtime fingerprint of the rotated chain prefix, only
+  appended bytes folded, a refold on any doubt, a bypass while unreadable — it
+  bounds the warm read, not the cold fold, so a durable compact projection
+  stays the next step); the bounded filtered tail reader
+  `ouroboros/jsonl_tail.py` (doubling live tail, three newest archives,
+  coverage facts) for history endpoints and the per-task recent-activity
+  sections alike; the
   fingerprint-keyed render cache in `ouroboros/_usage_rows_memo.py`, held while
   its input is unchanged and invalidated only by advance/refold, never by TTL;
   the `gateway/task_list_scan.py` stat-invalidated result memo and the

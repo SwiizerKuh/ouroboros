@@ -36,6 +36,24 @@ OWNER_LOW_TARGET_TOKENS = 200_000
 OWNER_NANO_TARGET_TOKENS = 81_920
 NANO_MIN_HEADROOM_TOKENS = 8_192
 
+# Low-water sizing of the automatic context-reclaim pass. The TRIGGER is
+# unchanged: a positive deficit against the binding boundary (the smaller known
+# of the owner target T and the route capacity W), one pass per route+round.
+# Only the SIZE of the requested pass changes: goal = deficit +
+# ceil(boundary / RECLAIM_LOW_WATER_DIVISOR), and 0 without a deficit. A pass
+# sized to the deficit alone lands exactly AT the boundary, so the next round's
+# ordinary growth re-arms it (a summarizer pass nearly every round). Sized this
+# way it lands about an eighth of the boundary below (~125K tokens on a 1M
+# route, ~25K under the 200K Low target), so the next pass needs that much real
+# growth. Structural constant, not a setting: 8 (12.5 % of the boundary) is a
+# disclosed design choice, not a measured optimum; change it here and only here
+# (tests/test_context_budget_ssot.py pins it). Cost: older history is condensed
+# sooner and each summarizer pass is larger. The materializer, its receipts and
+# the route+round latch are unchanged; the checkpoint event records requested
+# margin versus achieved headroom (context_fit.measure_main_fit,
+# loop_model_call._run_main_reclaim).
+RECLAIM_LOW_WATER_DIVISOR = 8
+
 # One overflow vocabulary for every seam that must recognize a CONTEXT-WINDOW
 # overflow (Main provider-code precedence, the local transport, and the
 # summarizer split path). A provider code or message shape added here reaches
@@ -287,11 +305,13 @@ SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # explicit full-history read becomes seconds-scale; this is observability, not
 # a retention gate and never shortens the memory horizon.
 CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
-# Custody replay (delegate_custody) walks the WHOLE events chain — live file
-# plus archive/events_*.jsonl — on ownership questions. This inherits the
+# The FIRST custody read of each process folds the WHOLE events chain — live
+# file plus archive/events_*.jsonl — into the process-local row memo
+# (delegate_custody_memo); later reads fold only appended bytes. Explicit
+# forensic and retirement scans still walk the chain. This inherits the
 # pre-rotation 100MB replay-degradation signal, now measured over the chain;
-# archives stay durable history (never GC'd), so the remediation is chain
-# indexing/compaction, never deletion.
+# archives stay durable history (never GC'd), so the remediation is a durable
+# compact custody projection, never deletion.
 EVENTS_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 # Warn before the observed 242-of-253 retained-drive corpus becomes routine;
 # count only direct children because startup health is an interactive path.

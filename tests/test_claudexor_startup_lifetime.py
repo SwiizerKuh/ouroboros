@@ -193,7 +193,15 @@ def test_two_python_consumers_join_one_elected_startup_after_prepare_barrier(sta
                for name in ("first", "second")]
     assert [row["code"] for row in results] == ["daemon_starting", "daemon_starting"]
     elected = _wait_for(lambda: _read_json(startup.home / "elected.json"))
-    live = process_custody.live_daemon_root_pids(startup.root, purposes={owned.CUSTODY_PURPOSE}, strict=True)
+    # The losing contender exits when it reaches the writer race; on a slow
+    # host it can still be in interpreter startup when the election resolves,
+    # so ownership liveness is asserted after a bounded exit wait, not instantly.
+    exit_deadline = time.monotonic() + 15
+    while True:
+        live = process_custody.live_daemon_root_pids(startup.root, purposes={owned.CUSTODY_PURPOSE}, strict=True)
+        if live == {elected["pid"]} or time.monotonic() >= exit_deadline:
+            break
+        time.sleep(.05)
     assert live == {elected["pid"]}, "the losing physical contender must not count as an owner"
     assert first.poll() is None and second.poll() is None
     count = len((startup.home / "spawned.jsonl").read_text().splitlines())
@@ -379,8 +387,11 @@ def test_crashed_startup_reports_current_pid_build_and_log_interval(startup):
     (startup.home / "publish").touch()
     manager = owned.OwnedClaudexorDaemon()
     with pytest.raises(ClaudexorUnavailable) as failed:
-        manager.ensure_running(startup_wait_sec=.5)
-    elected = _read_json(startup.home / "elected.json")
+        # The engine boots in ~1s on a loaded host; a .5s wait expires before
+        # the crash is observable and reports daemon_starting instead. The
+        # wait ends at the crash, not at its bound, so this stays fast.
+        manager.ensure_running(startup_wait_sec=5)
+    elected = _wait_for(lambda: _read_json(startup.home / "elected.json"))
     assert failed.value.code == "daemon_spawn_failed"
     text = str(failed.value)
     assert f"spawn_pid={elected['pid']}" in text and "poll=7" in text

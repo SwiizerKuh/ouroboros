@@ -109,7 +109,12 @@ def full_loop(tmp_path, monkeypatch):
             fixture.entered.set()
             with fixture.condition:
                 fixture.condition.notify_all()
-            assert fixture.release.wait(10), "fixture did not release review"
+            # Load-tolerant deadlock guard: under a full parallel suite the
+            # settlement machinery can take >10s to release; a wait expiry here
+            # used to raise and trigger the bounded re-dispatch of the SAME
+            # assignment (duplicate call_id in review_sends). Release is always
+            # event-driven, so the bound only guards a real hang.
+            assert fixture.release.wait(60), "fixture did not release review"
             from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
             vocabulary = acceptance_evidence_ref_vocabulary(request.evidence)
             reference = next(key for key, basis in vocabulary.items() if basis in {"tool_record", "packet_section"})
@@ -135,7 +140,7 @@ def full_loop(tmp_path, monkeypatch):
         fixture.release.set()
         with fixture.condition:
             assert fixture.condition.wait_for(
-                lambda: expected <= fixture.settled_operations, timeout=10,
+                lambda: expected <= fixture.settled_operations, timeout=60,
             ), "awaited review operations did not settle"
     ctx.owner_wait_callback = park
     fixture.park = park
@@ -163,7 +168,7 @@ def full_loop(tmp_path, monkeypatch):
     yield fixture
     fixture.release.set()
     if fixture.entered.is_set():
-        assert fixture.settled.wait(10)
+        assert fixture.settled.wait(60)
 
 
 def keep(f):
@@ -278,7 +283,7 @@ def test_reauthored_answer_collects_the_stranded_panel_before_paying_again(full_
             # read its verdicts yet and the settlement wake is the only signal.
             f.release.set()
             with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=60)
             return {"content": "", "tool_calls": [call("send_user_message", {"text": "Still writing the report."}, "status")]}, 0.0
         if f.model_step == 3:
             pending = [r for r in f.ctx._execution_trace["review_runs"] if r.get("authority") == "host_root"]
@@ -333,7 +338,7 @@ def test_reauthored_answer_on_a_one_cycle_install_is_refused_after_its_panel_was
             assert f.entered.wait(5)
             f.release.set()
             with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=60)
             return {"content": "", "tool_calls": [call("send_user_message", {"text": "Still writing the report."}, "status")]}, 0.0
         if f.model_step == 3:
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": reauthored}, "reauthored-review")]}, 0.0
@@ -515,7 +520,7 @@ def test_a_panel_that_settles_after_the_loop_exited_is_attached_through_the_reme
     write_task_result(f.ctx.drive_root, f.ctx.task_id, "completed", chat_id=1, result=ANSWER)
     f.release.set()
     with f.condition:
-        assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+        assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=60)
     events = list(f.events.queue)
     rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
     assert len(rows) == 1, [e.get("type") for e in events]
@@ -595,14 +600,14 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
             assert f.entered.wait(5)
             f.release.set()
             with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=60)
             f.reviewer_verdict = "PASS"
             _order_acceptance_feedback(f, monkeypatch, second, order)
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
         if f.model_step == 3:
             # This scenario rewrites under B's settled PASS, not while B runs.
             with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count >= 2, timeout=10)
+                assert f.condition.wait_for(lambda: f.settled_count >= 2, timeout=60)
             observation = f.ctx._acceptance_observation
             return {"content": json.dumps({"delivery_control": "replace", "full_answer": third,
                                            "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
@@ -851,7 +856,7 @@ def test_cold_loop_resume_collects_saved_roster_and_request_once(full_loop, monk
     assert checkpoint["reason"] == "review" and not checkpoint["quiz_id"]
     f.release.set()
     with f.condition:
-        assert f.condition.wait_for(lambda: f.settled_count == 2, timeout=10)
+        assert f.condition.wait_for(lambda: f.settled_count == 2, timeout=60)
     old = f.ctx
     new_tools = ToolRegistry(repo_dir=old.repo_dir, drive_root=old.drive_root)
     new = new_tools._ctx
@@ -932,7 +937,7 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
                 assert "- acceptance-one: FAIL" not in str(messages)
                 f.release.set()  # Settle after this request's ingress drain.
             with f.condition:
-                assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=10)
+                assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=60)
             assert f.model_step == 2
             return keep(f), 0.0
         assert f.model_step == 1

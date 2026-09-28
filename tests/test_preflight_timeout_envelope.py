@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize('override,expected_tests', [(None, 1800), ('3600', 3600), ('5400', 5400), ('invalid', 1800)])
+@pytest.mark.parametrize('override,expected_tests', [(None, 3600), ('5400', 5400), ('invalid', 3600)])
 @pytest.mark.parametrize('task_ceiling,transport', [(21600, 2700), (300, 7200)])
 def test_preflight_outer_uses_resolved_test_budget_and_existing_bounds(
     monkeypatch, override, expected_tests, task_ceiling, transport,

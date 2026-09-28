@@ -420,33 +420,25 @@ def _head_tracks_tests(repo: pathlib.Path, refs: Sequence[str] = _TESTS_BASELINE
     return False
 
 
-def _apply_diff(worktree: pathlib.Path, diff_text: "str | bytes") -> None:
-    # Accepts bytes so the candidate capture reaches `git apply` undecoded —
-    # see ``binary_stdout`` on `_run_git` for why the round-trip must not
-    # pass through UTF-8.
-    #
-    # `--unidiff-zero`: the capture's flag tail pins away every operator config
-    # that reshapes diff CONTENT, but hunk WIDTH still leaks through — a user
-    # `diff.context=0` (or `GIT_DIFF_OPTS=--unified=0` in the environment)
-    # makes `git diff` emit zero-context hunks, which `git apply` REJECTS by
-    # default, hard-blocking an ordinary textual candidate before any test
-    # runs. The flag accepts zero-context hunks and is a no-op for hunks that
-    # carry context, so it covers both the config and the env route without
-    # scrubbing either.
+def _apply_diff(worktree: pathlib.Path, diff_text: "str | bytes", *,
+               stage_index: bool = False) -> None:
+    # Raw bytes end to end (see ``binary_stdout`` on `_run_git`); the `-c`
+    # overrides keep checkout and apply byte-exact on every runner, and
+    # `--unidiff-zero` accepts zero-context hunks from `diff.context=0`
+    # configs (a no-op otherwise). `stage_index` is True only for a
+    # proven-unmerged source: the disposable worktree starts at HEAD, so a
+    # plain apply lands staged-new files as untracked and tracked-population
+    # tests read a smaller tree — `--index` stages the delta as it applies
+    # (the live-resolution projection). It stays False when the source index
+    # was installed, where re-staging would double-apply the same delta;
+    # untracked files copied afterwards stay untracked either way.
     if not diff_text.strip():
         return
     proc = _run_git(
         worktree,
-        # `-c core.autocrlf=false -c core.eol=lf`: the candidate capture is
-        # byte-exact (`--binary`, no textconv), so the apply must not re-run
-        # end-of-line conversion either. On a Windows runner (`core.autocrlf=true`
-        # by default) an LF payload applied against a CRLF-converted checkout
-        # otherwise mangles every line ending, breaking the byte-faithful
-        # guarantee this whole capture exists to hold. No `.gitattributes text`
-        # directive governs the affected paths, so the config override is
-        # authoritative.
         ["-c", "core.autocrlf=false", "-c", "core.eol=lf",
-         "apply", "--whitespace=nowarn", "--binary", "--unidiff-zero"],
+         "apply", "--whitespace=nowarn", "--binary", "--unidiff-zero",
+         *(["--index"] if stage_index else [])],
         input_text=diff_text,
         timeout=60,
     )
@@ -497,14 +489,32 @@ _PREFLIGHT_WORKERS_ENV = "OUROBOROS_PREFLIGHT_TEST_WORKERS"
 
 
 def _preflight_worker_count() -> int:
-    """How many xdist workers the parallel pass must start — always >= 2."""
+    """How many xdist workers the parallel pass must start — always >= 2.
+
+    CPU-sized but clamped by AVAILABLE MEMORY (only ever lowering): each test
+    worker peaks around 1.5 GB, and a host whose CPU count implies more workers
+    than its memory holds loses random workers to the OOM killer mid-pass — a
+    PARALLEL_WORKER_CRASH attributed to whichever innocent test was running.
+    Unreadable memory fails open to the CPU-derived count.
+    """
     raw = os.environ.get(_PREFLIGHT_WORKERS_ENV, "")
     if raw.strip():
         try:
             return max(_MIN_PREFLIGHT_WORKERS, int(raw.strip()))
         except ValueError:
             pass
-    return max(_MIN_PREFLIGHT_WORKERS, os.cpu_count() or _MIN_PREFLIGHT_WORKERS)
+    workers = max(_MIN_PREFLIGHT_WORKERS, os.cpu_count() or _MIN_PREFLIGHT_WORKERS)
+    try:
+        with open("/proc/meminfo", encoding="ascii") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    available_gb = int(line.split()[1]) / (1024 * 1024)
+                    workers = max(_MIN_PREFLIGHT_WORKERS,
+                                  min(workers, int(available_gb / 1.5)))
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    return workers
 
 
 # Forcing the flags and the plugins still only proves what the gate ASKED for.
@@ -763,7 +773,7 @@ def _plugin_missing_remediation(agent_python: str, rejected: str = "") -> str:
     )
 
 
-_DEFAULT_PREFLIGHT_TIMEOUT_SEC = 1800
+_DEFAULT_PREFLIGHT_TIMEOUT_SEC = 3600
 
 
 def _resolve_preflight_timeout(timeout: int = _DEFAULT_PREFLIGHT_TIMEOUT_SEC) -> int:
@@ -1236,7 +1246,9 @@ def run_hermetic_pytest(
     projection of the live worktree plus its safe non-ignored untracked
     entries — for every source-index state, including a merge in progress,
     whose unmerged entries the former staged+unstaged diff pair rendered as
-    stubs and ``--cc`` hunks that ``git apply`` dropped or rejected. The
+    stubs and ``--cc`` hunks that ``git apply`` dropped or rejected. With a
+    proven-unmerged source index the delta is applied with ``--index`` so
+    staged-new files stay tracked in the candidate. The
     untracked side keeps ``_copy_untracked``'s long-standing boundaries:
     ignored files are absent, and untracked symlinks are dereferenced to
     regular files (non-file entries skipped), so the candidate is not
@@ -1341,6 +1353,8 @@ def run_hermetic_pytest(
         # unstaged pair emits unmerged stubs/combined hunks that git apply can
         # reject or silently drop. Pin content-changing diff config and retain
         # raw bytes end to end (the byte/EOL contracts live in _run_git/_apply_diff).
+        # A proven-unmerged source stages the delta into the disposable index
+        # as it applies, or staged-new files land untracked in the candidate.
         try:
             combined_proc = _run_git(
                 repo,
@@ -1350,7 +1364,8 @@ def run_hermetic_pytest(
             )
             if combined_proc.returncode != 0:
                 raise RuntimeError(combined_proc.stderr.strip() or "git diff HEAD failed")
-            _apply_diff(worktree, combined_proc.stdout or b"")
+            _apply_diff(worktree, combined_proc.stdout or b"",
+                        stage_index=(source_index_tree is None))
             _copy_untracked(repo, worktree)
         # Capture/apply timeouts and filesystem faults are assembly failures,
         # not pytest timeouts or missing interpreters from the outer handlers.

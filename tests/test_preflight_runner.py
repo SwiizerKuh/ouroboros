@@ -1538,6 +1538,65 @@ def test_a_mixed_unmerged_index_drops_neither_staged_nor_conflicted_changes(
     )
 
 
+def test_staged_new_files_stay_tracked_in_the_candidate_during_a_merge(
+    tmp_path, two_pass_env, stub_passes, monkeypatch
+):
+    """Staged-new files must stay TRACKED in the candidate, not merely present.
+
+    With an unmerged index the source `git write-tree` fails, so no index is
+    installed into the disposable worktree — and a plain `git apply` of the
+    worktree-vs-HEAD capture lands staged-new files as UNTRACKED worktree
+    files. Content spies cannot see that: the bytes are right, but any test
+    enumerating the TRACKED population (domain manifest coverage, generated
+    inventories) reads a smaller tree than the source and fails. On the
+    unfixed base this test fails on the tracked-status assertion while every
+    content assertion passes."""
+    import subprocess as _sp
+
+    from ouroboros import preflight_runner
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    repo = _make_repo(tmp_path, {
+        "tests/test_plain.py": "def test_ok():\n    assert True\n",
+        "conflict.txt": "base\n",
+    })
+    _start_conflicted_merge(
+        repo, incoming={"conflict.txt": "incoming\n"}, ours={"conflict.txt": "ours\n"}
+    )
+    (repo / "conflict.txt").write_text("resolved\n", encoding="utf-8")
+    (repo / "supervisor").mkdir(exist_ok=True)
+    (repo / "supervisor" / "budget_resume.py").write_text("new file\n", encoding="utf-8")
+    _git(repo, "add", "supervisor/budget_resume.py")
+    assert "supervisor/budget_resume.py" in _sp.run(
+        ["git", "ls-files"], cwd=str(repo), check=True,
+        capture_output=True, text=True,
+    ).stdout.split(), "fixture precondition: the new file must be staged"
+
+    stub_passes([])
+    seen: dict[str, object] = {}
+
+    def _spy(agent_python, worktree, temp_root, args, timeout):
+        wt = pathlib.Path(worktree)
+        target = wt / "supervisor" / "budget_resume.py"
+        seen["content"] = target.read_text(encoding="utf-8") if target.is_file() else None
+        seen["tracked"] = _sp.run(
+            ["git", "ls-files"], cwd=str(worktree), check=True,
+            capture_output=True, text=True,
+        ).stdout.split()
+        return (0, "", "")
+
+    monkeypatch.setattr(preflight_runner, "_execute_pytest_pass", _spy)
+
+    assert run_hermetic_pytest(repo, timeout=120) is None
+    assert seen["content"] == "new file\n", (
+        f"staged-new file content lost from the candidate: {seen!r}"
+    )
+    assert "supervisor/budget_resume.py" in seen["tracked"], (
+        "staged-new file landed untracked in the candidate — tracked-population "
+        f"tests read a smaller tree than the source: {seen!r}"
+    )
+
+
 def test_an_unmerged_resolution_by_deletion_is_absent_from_the_candidate(
     tmp_path, two_pass_env, stub_passes, monkeypatch
 ):

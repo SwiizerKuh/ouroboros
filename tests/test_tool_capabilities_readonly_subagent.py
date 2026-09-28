@@ -9,6 +9,8 @@ task-drive and skill-payload filters on its data and repo reads.
 import os
 import pathlib
 
+import pytest
+
 
 def test_local_readonly_subagent_execute_blocks_forbidden_tools(tmp_path, monkeypatch):
     from ouroboros.contracts.task_constraint import TaskConstraint
@@ -58,7 +60,11 @@ def test_local_readonly_subagent_execute_blocks_forbidden_tools(tmp_path, monkey
         assert "LOCAL_READONLY_SUBAGENT_BLOCKED" in registry.execute(name, {})
 
 
+@pytest.mark.serial
 def test_local_readonly_subagent_allows_enabled_extension_tool(tmp_path, monkeypatch):
+    # Spawns a real out-of-process extension child behind a 5-second wall
+    # timeout: under a loaded parallel pass the spawn alone can exceed it,
+    # a load flake, not a boundary failure — so this runs in the serial pass.
     from ouroboros import extension_loader
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tools.registry import ToolContext, ToolRegistry

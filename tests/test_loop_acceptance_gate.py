@@ -65,7 +65,11 @@ def _order_acceptance_feedback(fixture, monkeypatch, subject, order):
         if assignment.request.subject == subject and order == "pending":
             execute = executor.execute
             def held():
-                assert released.wait(10), "host did not release the pending panel"
+                # Load-tolerant deadlock guard (60s): the host panel releases
+                # this event; under a fully loaded parallel suite the wait can
+                # exceed 10s, and a spurious expiry re-dispatches the SAME
+                # assignment (duplicate call_id). Release is event-driven.
+                assert released.wait(60), "host did not release the pending panel"
                 return execute()
             executor.execute = held
         return executor
@@ -75,7 +79,7 @@ def _order_acceptance_feedback(fixture, monkeypatch, subject, order):
             fixture.release.set()
             with fixture.condition:
                 assert fixture.condition.wait_for(
-                    lambda: fixture.settled_count > completed_before, timeout=10,
+                    lambda: fixture.settled_count > completed_before, timeout=60,
                 ), "review did not settle before host release"
         return original_register(request, *args, **kwargs)
 

@@ -1145,7 +1145,7 @@ On Android, `enter-linux` restores ordinary OOM selection for its own process an
 descendants without removing root. The existing
 `OUROBOROS_PREFLIGHT_TEST_WORKERS` operator lever defaults to 2 and
 `OUROBOROS_PREFLIGHT_TIMEOUT_SEC` to 3600 seconds at this entry, preserving explicit
-overrides. Other installs retain the upstream 1800-second total test budget.
+overrides. Other installs retain the upstream 3600-second total test budget.
 Standalone preflight/advisory ToolEntry bounds add that resolved test total to the
 existing plan-style task/transport settlement envelope and finalization grace;
 they must not expire before tests and the critic can settle. This outer bound

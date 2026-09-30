@@ -292,7 +292,12 @@ def test_producer_to_wire_consumers_keep_tree_scope_and_late_unknown_price(data_
         console.log(JSON.stringify({meta: rows.map(taskCostMeta), sticky: sticky.meta,
             late: mergeStickyCostMeta(sticky, projections[4]).meta}));
     """
-    result = subprocess.run(['node', '--input-type=module', '-e', script],
+    from tests._shared import hermetic_node_bin as _hermetic_node_bin
+
+    _node_bin = _hermetic_node_bin()
+    if _node_bin is None:
+        pytest.skip("no hermetic-proof node runtime (bundled/PATH) on this host")
+    result = subprocess.run([_node_bin, '--input-type=module', '-e', script],
                             cwd=Path(__file__).parents[1], input=json.dumps([terminal, heartbeat, history, own, late]),
                             capture_output=True, text=True, check=True)
     browser = json.loads(result.stdout)

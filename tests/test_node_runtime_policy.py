@@ -510,6 +510,57 @@ def test_probe_empty_version_output_gets_a_named_reason(tmp_path, monkeypatch):
     assert calls  # probed, not short-circuited
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stub dispatchers")
+def test_hermetic_resolution_unwraps_a_spawn_env_dead_dispatcher(
+    tmp_path, monkeypatch,
+):
+    """Mise-shim class, executed for real with stub binaries and no node: a
+    dispatcher answering `--version` on live HOME but dying under the spawn
+    env is unwrapped (via the host env) to a target that answers only under
+    that spawn env — and the live-env health row never satisfies the
+    spawn-env probe (env-keyed memo split)."""
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir(parents=True)
+    target = tmp_path / "real" / "node"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ] && [ -n "$SPAWN_MARKER" ]; '
+        'then echo "v26.8.1"; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    target.chmod(0o755)
+    shim = shim_dir / "node"
+    shim.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = "-p" ]; then echo "{target}"; exit 0; fi\n'
+        'if [ "$1" = "--version" ] && [ -z "$SPAWN_MARKER" ]; '
+        'then echo "v26.8.1"; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setattr(node_runtime._platform, "resolve_bundled_node", lambda: None)
+    # The spawn env must not leak the marker into the live probe below.
+    monkeypatch.delenv("SPAWN_MARKER", raising=False)
+
+    spawn_env = {
+        "PATH": str(shim_dir),
+        "HOME": str(tmp_path / "dead-home"),
+        "SPAWN_MARKER": "1",
+    }
+
+    live = node_runtime.node_runtime_health(str(shim))
+    assert live.healthy
+    spawned = node_runtime.node_runtime_health(str(shim), env=spawn_env)
+    assert not spawned.healthy  # the live row must not satisfy the spawn probe
+
+    found, version = node_runtime.resolve_hermetic_node(spawn_env)
+    assert found == str(target)
+    assert version == "26.8.1"
+
+
 # ---------------------------------------------------------------------------
 # missing-node downgrades (adversarial finding C-5)
 # ---------------------------------------------------------------------------

@@ -6,7 +6,26 @@ import subprocess
 from pathlib import Path
 
 
-NODE_BIN = str(Path.home() / ".claudexor" / "node" / "bin" / "node") if (Path.home() / ".claudexor" / "node" / "bin" / "node").exists() else "node"
+def _resolve_test_node_bin() -> str:
+    """Shim-proof node for tests that shell out: hermetic helper first."""
+    try:
+        from tests._shared import hermetic_node_bin as _hermetic_node_bin
+
+        found = _hermetic_node_bin()
+        if found:
+            return found
+    except Exception:
+        pass
+    bundled = Path.home() / ".claudexor" / "node" / "bin" / "node"
+    try:
+        if bundled.exists():
+            return str(bundled)
+    except OSError:
+        pass
+    return "node"
+
+
+NODE_BIN = _resolve_test_node_bin()
 
 import pytest
 

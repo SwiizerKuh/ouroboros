@@ -22,7 +22,9 @@ from typing import Any, Dict, List, NamedTuple, Tuple
 from ouroboros import platform_layer as _platform
 
 
-def _probe_node_version_outcome(node_path: str, timeout_sec: float = 10) -> Tuple[str, str]:
+def _probe_node_version_outcome(
+    node_path: str, timeout_sec: float = 10, env: Dict[str, str] | None = None
+) -> Tuple[str, str]:
     """One ``node --version`` execution probe: ``(version, failure_reason)``.
 
     Exactly one of the pair is non-empty. The reason vocabulary is small and
@@ -34,7 +36,11 @@ def _probe_node_version_outcome(node_path: str, timeout_sec: float = 10) -> Tupl
     # `node --version` fail before the hermetic lane gets a chance to scrub the
     # variable or execute arbitrary operator code during a supposedly inert
     # version check.
-    probe_env = dict(os.environ)
+    # When the caller passes the exact spawn env (the hermetic gate does), probe
+    # under THAT env as a replacement — never the live os.environ overlaid —
+    # so a shim healthy on live HOME but dead under a disposable HOME fails
+    # here instead of at spawn (mise-shim class fix).
+    probe_env = dict(env) if env is not None else dict(os.environ)
     probe_env.pop("NODE_OPTIONS", None)
     try:
         result = _platform._hidden_run(
@@ -64,9 +70,20 @@ def _probe_node_version_outcome(node_path: str, timeout_sec: float = 10) -> Tupl
     return version, ""
 
 
-def probe_node_version(node_path: str) -> str:
+def probe_node_version(
+    node_path: str, timeout_sec: float = 10, env: Dict[str, str] | None = None
+) -> str:
     """Return a normalized Node version, or ``""`` on probe failure."""
-    version, _reason = _probe_node_version_outcome(node_path)
+    # Optional args are trailing so existing single-arg callers and
+    # ``lambda path: ...`` test patches keep working.
+    if env is None:
+        version, _reason = _probe_node_version_outcome(
+            node_path, timeout_sec=timeout_sec
+        )
+    else:
+        version, _reason = _probe_node_version_outcome(
+            node_path, timeout_sec=timeout_sec, env=env
+        )
     return version
 
 
@@ -92,24 +109,46 @@ class NodeRuntimeHealth(NamedTuple):
         return self.status == "healthy"
 
 
-# Process-local probe memo keyed by (lexical path, mtime_ns, size). A changed
-# binary re-probes; ``missing`` is deliberately never memoized so a runtime
-# installed mid-session (e.g. `brew reinstall node`, D9) is noticed without a
-# restart. A ``timeout`` verdict memoizes WITH the budget it was observed
-# under (``probed_timeout``): callers probe with DIFFERENT budgets (workspace
-# preflight uses a short 3s cap on the bounded admission path, skill surfaces
-# allow 10s), so a caller whose budget exceeds the cached one re-probes — a
-# short-budget timeout can therefore never poison a longer-budget consumer —
-# while a same-or-smaller budget reuses the verdict instead of stalling for
-# the full timeout again on every call (T15). The incident class (kernel
-# SIGKILL on launch) dies in milliseconds and memoizes normally. Known residual: a fix that does not
+# Process-local probe memo keyed by (lexical path, mtime_ns, size, env_fp). A
+# changed binary re-probes; ``missing`` is deliberately never memoized so a
+# runtime installed mid-session (e.g. `brew reinstall node`, D9) is noticed
+# without a restart. The env fingerprint is load-bearing for the mise-shim
+# class fix: a shim probed healthy under live HOME must never satisfy a later
+# probe under a disposable HOME, so live ("live") and spawn-env (sha16 of the
+# effective probe env) verdicts never share a row. A ``timeout`` verdict
+# memoizes WITH the budget it was observed under (``probed_timeout``):
+# callers probe with DIFFERENT budgets (workspace preflight uses a short 3s
+# cap on the bounded admission path, skill surfaces allow 10s), so a caller
+# whose budget exceeds the cached one re-probes — a short-budget timeout can
+# therefore never poison a longer-budget consumer — while a same-or-smaller
+# budget reuses the verdict instead of stalling for the full timeout again on
+# every call (T15). The incident class (kernel SIGKILL on launch) dies in
+# milliseconds and memoizes normally. Known residual: a fix that does not
 # touch the file bytes (xattr / Gatekeeper requalification) keeps a stale
 # ``broken`` verdict for this process's lifetime — the trace disclosing the
 # memoized reason makes that visible rather than silent.
-_NODE_HEALTH_MEMO: Dict[Tuple[str, int, int], NodeRuntimeHealth] = {}
+_NODE_HEALTH_MEMO: Dict[Tuple[str, int, int, str], NodeRuntimeHealth] = {}
 
 
-def node_runtime_health(node_path: str, timeout_sec: float = 10) -> NodeRuntimeHealth:
+def _probe_env_fingerprint(env: Dict[str, str] | None) -> str:
+    """Fingerprint distinguishing live-HOME from spawn-env probes.
+
+    ``None`` (live ``os.environ``) maps to the constant ``"live"``; an explicit
+    spawn env maps to a sha16 over its sorted ``k=v`` pairs. Temp-root paths
+    differ per preflight, so spawn-env rows re-probe once per preflight —
+    one extra ``--version`` per gate run, acceptable.
+    """
+    import hashlib
+
+    if env is None:
+        return "live"
+    items = sorted(f"{key}={value}" for key, value in dict(env).items())
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()[:16]
+
+
+def node_runtime_health(
+    node_path: str, timeout_sec: float = 10, env: Dict[str, str] | None = None
+) -> NodeRuntimeHealth:
     """Probe (memoized) whether ``node_path`` is an actually-runnable Node.
 
     ``shutil.which`` proves only that a file exists and is executable; the
@@ -126,13 +165,18 @@ def node_runtime_health(node_path: str, timeout_sec: float = 10) -> NodeRuntimeH
             return NodeRuntimeHealth(status="missing", reason="not_executable", path=text)
     except OSError as exc:
         return NodeRuntimeHealth(status="missing", reason=f"stat_failed:{type(exc).__name__}", path=text)
-    key = (text, int(stat.st_mtime_ns), int(stat.st_size))
+    key = (text, int(stat.st_mtime_ns), int(stat.st_size), _probe_env_fingerprint(env))
     cached = _NODE_HEALTH_MEMO.get(key)
     if cached is not None and (
         cached.reason != "timeout" or float(timeout_sec) <= cached.probed_timeout
     ):
         return cached
-    version, reason = _probe_node_version_outcome(text, timeout_sec=timeout_sec)
+    # Forward env= only when set: test doubles patch this seam with
+    # fake_probe(path, timeout_sec=...) stubs that take no env kwarg.
+    if env is None:
+        version, reason = _probe_node_version_outcome(text, timeout_sec=timeout_sec)
+    else:
+        version, reason = _probe_node_version_outcome(text, timeout_sec=timeout_sec, env=env)
     if version:
         health = NodeRuntimeHealth(status="healthy", version=version, path=text)
     elif reason == "timeout":
@@ -144,6 +188,120 @@ def node_runtime_health(node_path: str, timeout_sec: float = 10) -> NodeRuntimeH
         health = NodeRuntimeHealth(status="broken", reason=reason, path=text)
     _NODE_HEALTH_MEMO[key] = health
     return health
+
+
+def _which_all_in_env(name: str, env: Dict[str, str]) -> List[str]:
+    """All absolute ``name`` hits across the given env's PATH, in order."""
+    seen: List[str] = []
+    spellings = [name]
+    if os.name == "nt":
+        # shutil.which finds node.exe via PATHEXT; a bare-name join never
+        # would, so the hermetic fallback could not see a PATH node.exe.
+        pathext = env.get("PATHEXT") or os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        for ext in pathext.split(os.pathsep):
+            ext = ext.strip()
+            if ext and not name.lower().endswith(ext.lower()):
+                spellings.append(name + ext)
+    for entry in str(env.get("PATH", "")).split(os.pathsep):
+        if not entry:
+            continue
+        for spelling in spellings:
+            candidate = pathlib.Path(entry) / spelling
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    text = str(candidate)
+                    if text not in seen:
+                        seen.append(text)
+            except OSError:
+                continue
+    return seen
+
+
+def _unwrap_dispatcher(
+    candidate: str, host_env: Dict[str, str] | None, timeout_sec: float = 2
+) -> str:
+    """Ask a version-manager dispatcher where the real binary lives.
+
+    Runs ``[candidate, "-p", "process.execPath"]`` under the HOST env (where
+    the dispatcher's trust DB is intact) with a short cap and a neutral cwd.
+    Returns the distinct absolute executable stdout, else ``""``. Never
+    realpaths the shim itself (that resolves to ``/usr/bin/mise``).
+    Generic: works for mise/asdf/volta/nvm-style dispatchers that forward to
+    a real node, and harmlessly fails for anything else.
+    """
+    import tempfile
+
+    base = dict(host_env) if host_env is not None else dict(os.environ)
+    base.pop("NODE_OPTIONS", None)
+    try:
+        result = _platform._hidden_run(
+            [str(candidate), "-p", "process.execPath"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_sec,
+            check=False,
+            env=base,
+            cwd=tempfile.gettempdir(),
+        )
+    except Exception:
+        return ""
+    if int(result.returncode or 0) != 0:
+        return ""
+    text = str(result.stdout or "").strip()
+    if not text or not os.path.isabs(text) or text == str(candidate):
+        return ""
+    try:
+        target = pathlib.Path(text)
+        if target.is_file() and os.access(target, os.X_OK):
+            return text
+    except OSError:
+        return ""
+    return ""
+
+
+def resolve_hermetic_node(
+    spawn_env: Dict[str, str],
+    host_env: Dict[str, str] | None = None,
+    timeout_sec: float = 10,
+    max_candidates: int = 4,
+) -> Tuple[str, str]:
+    """Pick a node that runs under the exact spawn env the gate will use.
+
+    Bundled first (probed under ``spawn_env``), else walk ``spawn_env`` PATH
+    probing each candidate under ``spawn_env``; a candidate that fails there
+    is unwrapped once via the host env (dispatcher ``-p process.execPath``)
+    and the unwrapped target is probed under ``spawn_env``. Returns
+    ``(path, version)`` or ``("", reason)``.
+    """
+    bundled = _platform.resolve_bundled_node()
+    if bundled:
+        version, _reason = _probe_node_version_outcome(
+            bundled, timeout_sec=timeout_sec, env=spawn_env
+        )
+        if version:
+            return bundled, version
+    tried = 0
+    last_reason = "not_on_path"
+    for candidate in _which_all_in_env("node", spawn_env):
+        if tried >= max_candidates:
+            break
+        tried += 1
+        version, reason = _probe_node_version_outcome(
+            candidate, timeout_sec=timeout_sec, env=spawn_env
+        )
+        if version:
+            return candidate, version
+        last_reason = reason or last_reason
+        unwrapped = _unwrap_dispatcher(candidate, host_env, timeout_sec=2)
+        if unwrapped and unwrapped != candidate:
+            version2, reason2 = _probe_node_version_outcome(
+                unwrapped, timeout_sec=timeout_sec, env=spawn_env
+            )
+            if version2:
+                return unwrapped, version2
+            last_reason = reason2 or last_reason
+    return "", last_reason or "not_on_path"
 
 
 def _path_node_runtime_health(timeout_sec: float = 10) -> NodeRuntimeHealth:

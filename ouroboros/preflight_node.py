@@ -142,6 +142,54 @@ def run_node_tests(
             _REMEDIATION, "", max_output,
         )
         return result
+    # Hermetic validation AFTER the live floor check (so a live-TOO_OLD keeps
+    # its verdict and the typed-block tests stay stable): a version-manager
+    # shim healthy on live HOME dies under the gate's disposable HOME. Re-probe
+    # the same path under the exact spawn env; on failure resolve the hermetic
+    # runtime (PATH walk + dispatcher unwrap) and use it. Live-probe failures
+    # already returned MISSING above — no fallback from there.
+    spawn_probe_env = pr._preflight_env(temp_root, worktree)
+    spawn_probe_env.pop("NODE_OPTIONS", None)
+    try:
+        from ouroboros import node_runtime as _nr
+
+        health = _nr.node_runtime_health(node, env=spawn_probe_env)
+    except Exception as exc:
+        result["error"] = pr._diagnosis(
+            "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_NODE_MISSING (hard block): "
+            f"{node} could not be probed under the gate spawn env "
+            f"(resolver_error:{type(exc).__name__}), so it cannot run the suite",
+            _REMEDIATION, "", max_output,
+        )
+        return result
+    if not health.healthy:
+        try:
+            replacement, replacement_version = _nr.resolve_hermetic_node(
+                spawn_probe_env
+            )
+        except Exception as exc:
+            replacement, replacement_version = "", f"resolver_error:{type(exc).__name__}"
+        if replacement:
+            node = replacement
+            version = replacement_version
+            result["node"] = node
+            if _version_tuple(version) < NODE_MIN_VERSION:
+                floor = ".".join(str(part) for part in NODE_MIN_VERSION)
+                result["error"] = pr._diagnosis(
+                    "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_NODE_TOO_OLD (hard block): "
+                    f"{node} is v{version}, below the v{floor} floor the suite needs",
+                    _REMEDIATION, "", max_output,
+                )
+                return result
+        else:
+            result["error"] = pr._diagnosis(
+                "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_NODE_MISSING (hard block): "
+                f"{node} fails under the gate spawn env "
+                f"({health.reason or 'unhealthy'}), and no substitute runtime "
+                f"was found ({replacement_version or 'not_on_path'})",
+                _REMEDIATION, "", max_output,
+            )
+            return result
 
     # Same containment pattern as the pytest passes (`_execute_pytest_pass`):
     # spawned INSIDE the container — `node --test` forks one worker per file —
@@ -153,8 +201,9 @@ def run_node_tests(
     # NODE_OPTIONS admits --test-only/--test-*-pattern/--require: an inherited
     # operator value can silently green a red suite — same class the pytest
     # lane closes by scrubbing PYTEST_* (see _preflight_env).
-    env = pr._preflight_env(temp_root, worktree)
-    env.pop("NODE_OPTIONS", None)
+    # Reuse the already-built spawn env the hermetic validation probed under,
+    # so resolution, probe and spawn share one env identity.
+    env = spawn_probe_env
     proc = container.spawn(
         [node, "--test", *files],
         cwd=str(pathlib.Path(worktree) / WEB_DIR),

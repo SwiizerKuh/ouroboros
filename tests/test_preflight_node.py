@@ -162,6 +162,101 @@ def test_too_old_node_is_a_typed_hard_block(tmp_path, monkeypatch):
     assert "18.19.1" in result["error"]
 
 
+def test_spawn_env_unhealthy_shim_is_replaced_by_hermetic_resolution(
+    tmp_path, monkeypatch,
+):
+    """A shim healthy on live HOME but dead under the gate spawn env is
+    substituted (mise-shim class fix) — the dead path is never spawned."""
+    from ouroboros import node_runtime as nr
+
+    worktree = _worktree(tmp_path, {"web/tests/ok.test.js": _PASSING_TEST})
+    monkeypatch.setattr(pn, "resolve_node", lambda: "/shim/node")
+    monkeypatch.setattr(pn, "probe_node_version", lambda path: "26.8.1")
+    monkeypatch.setattr(
+        nr, "node_runtime_health",
+        lambda path, timeout_sec=10, env=None: nr.NodeRuntimeHealth(
+            status="broken", reason="exit:1", path=path,
+        ),
+    )
+    monkeypatch.setattr(
+        nr, "resolve_hermetic_node",
+        lambda spawn_env, host_env=None, **kwargs: ("/real/node", "26.8.1"),
+    )
+    spawned = []
+
+    class _FakeProc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+        def poll(self):
+            return 0
+
+    class _FakeContainer:
+        def spawn(self, argv, **kwargs):
+            spawned.append(argv)
+            return _FakeProc()
+
+        def reap(self):
+            return ""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "ouroboros.process_containment.ProcessContainer", _FakeContainer
+    )
+
+    result = pn.run_node_tests(worktree, tmp_path / "t", 60, 8000)
+
+    assert result["error"] is None
+    assert result["node"] == "/real/node"
+    assert spawned and spawned[0][0] == "/real/node"
+
+
+def test_spawn_env_unhealthy_shim_without_substitute_is_a_typed_hard_block(
+    tmp_path, monkeypatch,
+):
+    """No hermetic substitute for the dead shim: MISSING names the shim and
+    the spawn-env reason, and nothing is spawned."""
+    from ouroboros import node_runtime as nr
+
+    worktree = _worktree(tmp_path, {"web/tests/ok.test.js": _PASSING_TEST})
+    monkeypatch.setattr(pn, "resolve_node", lambda: "/shim/node")
+    monkeypatch.setattr(pn, "probe_node_version", lambda path: "26.8.1")
+    monkeypatch.setattr(
+        nr, "node_runtime_health",
+        lambda path, timeout_sec=10, env=None: nr.NodeRuntimeHealth(
+            status="broken", reason="exit:1", path=path,
+        ),
+    )
+    monkeypatch.setattr(
+        nr, "resolve_hermetic_node",
+        lambda spawn_env, host_env=None, **kwargs: ("", "not_on_path"),
+    )
+
+    class _NoSpawnContainer:
+        def spawn(self, *args, **kwargs):
+            raise AssertionError("must not spawn the unhealthy shim")
+
+        def reap(self):
+            return ""
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "ouroboros.process_containment.ProcessContainer", _NoSpawnContainer
+    )
+
+    result = pn.run_node_tests(worktree, tmp_path / "t", 60, 8000)
+
+    assert "PREFLIGHT_NODE_MISSING" in result["error"]
+    assert "/shim/node" in result["error"]
+    assert "exit:1" in result["error"]
+
+
 @pytest.mark.parametrize("version,meets_floor", [
     ("20.11.0", True),
     ("20.11", True),

@@ -676,3 +676,36 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         )
 
     threading.Thread(target=_run_direct, daemon=True).start()
+
+
+def is_interview_command(text: Any) -> bool:
+    """True when raw owner text is the /interview trigger (exact or spaced).
+
+    Single predicate shared by the server.py dispatch branch and the test
+    suite, so the branch cannot drift from what the tests pin: `/interview`
+    alone or followed by a space starts the lane, while `/interviewing` and
+    similar prefixes fall through to ordinary routing.
+    """
+    lowered = str(text or "").strip().lower()
+    return lowered == "/interview" or lowered.startswith("/interview ")
+
+
+def handle_interview_command(bridge: Any, ctx: Any, incoming: Dict[str, Any], reply: Any) -> None:
+    """Rewrite /interview [idea] to the explicit Q00 MCP-lane trigger.
+
+    Owner A/B decision 2026-09-29: /interview always drives the Q00 MCP lane
+    via the q00-interview-bridge playbook, in Main and Project chats alike.
+    Lives here (not server.py) so the composition root stays under its size
+    bound; the rewrite routes through the canonical owner-message lane so
+    chat_id/project/attachments/origin are preserved. No skill payload bytes
+    are changed, so existing skill reviews stay valid. `incoming` is the same
+    dict shape `_route_owner_message` takes; only its `text` is rewritten.
+    """
+    idea = str(incoming.get("text") or "").strip()[len("/interview"):].strip()
+    if not idea:
+        reply("Usage: /interview [what i want to build] — e.g. /interview a small playlist exporter. Send it again with your idea.")
+        return
+    routed = dict(incoming)
+    routed["text"] = f"Use q00-interview-bridge MCP lane: start Q00 interview about {idea}"
+    routed["received_at"] = str(incoming.get("received_at") or "")
+    _route_owner_message(bridge, ctx, routed)

@@ -391,7 +391,7 @@ terminal; the control skill is how they run Ouroboros. Such a skill is therefore
 **expected** to:
 
 - carry every owner command the local UI accepts, including `/panic`,
-  `/restart`, `/evolve`, `/bg`, `/review`, `/status`, and free-form owner text;
+  `/restart`, `/evolve`, `/bg`, `/review`, `/status`, `/interview [idea]`, and free-form owner text;
 - run a long-lived poller / `supervised_task` to receive inbound traffic;
 - subscribe to the owner-conversation events it needs to mirror.
 

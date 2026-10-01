@@ -72,6 +72,8 @@ from ouroboros.server_owner_routing import (  # noqa: F401
     _route_owner_message,
     _route_project_chat_to_running_task,
     _stage_mailbox_attachments,
+    handle_interview_command,
+    is_interview_command,
 )
 from ouroboros.server_liveness import (  # noqa: F401
     _alert_chat_turn_wedge,
@@ -449,6 +451,19 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
                 reply("⚠️ Command ignored: this transport is not the bound owner chat.", "failed")
                 continue
 
+        # Single envelope shared by ordinary routing and the /interview rewrite.
+        incoming = {
+            "chat_id": chat_id,
+            "text": text,
+            "image_caption": image_caption,
+            "client_message_id": client_message_id,
+            "image_data": image_data,
+            "task_constraint": task_constraint,
+            "task_metadata": task_metadata,
+            "log_text": log_text,
+            "origin_message_ref": origin_message_ref,
+            "source": source, "received_at": str(msg.get("received_at") or ""),
+        }
         if lowered.startswith("/panic"):
             reply("🛑 PANIC: killing everything. App will close.", "")
             # Never hand back a volatile tail before Panic: even a nonblocking
@@ -547,23 +562,11 @@ def _handle_bridge_update_batch(bridge, updates, offset: int, ctx: Any, cursor: 
 
             status = status_text(ctx.WORKERS, ctx.PENDING, ctx.RUNNING)
             reply(status)
+        elif is_interview_command(text):
+            handle_interview_command(bridge, ctx, incoming, reply)
+            continue
         else:
-            _route_owner_message(
-                bridge,
-                ctx,
-                {
-                    "chat_id": chat_id,
-                    "text": text,
-                    "image_caption": image_caption,
-                    "client_message_id": client_message_id,
-                    "image_data": image_data,
-                    "task_constraint": task_constraint,
-                    "task_metadata": task_metadata,
-                    "log_text": log_text,
-                    "origin_message_ref": origin_message_ref,
-                    "source": source, "received_at": str(msg.get("received_at") or ""),
-                },
-            )
+            _route_owner_message(bridge, ctx, incoming)
     return offset
 
 

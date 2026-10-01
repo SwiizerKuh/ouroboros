@@ -650,7 +650,7 @@ notebook, and no terminal; the control skill (Telegram today, any remote-control
 skill tomorrow) is how they run Ouroboros. After fresh executable review,
 enablement, content-hash-bound token issuance, explicit grants, and owner/chat
 binding, such a skill is **expected** to carry every owner command the direct UI
-accepts (`/panic`, `/restart`, `/evolve`, `/bg`, `/review`, `/status`, and
+accepts (`/panic`, `/restart`, `/evolve`, `/bg`, `/review`, `/status`, `/interview [idea]`, and
 free-form owner text), run a long-lived poller (`supervised_task`), and observe
 the owner-conversation events it mirrors. Power is not a defect: review judges
 the skill's actual safety properties — owner/chat binding, trustworthy source

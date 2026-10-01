@@ -22,7 +22,9 @@ palettes in `web/ui.css` preserve geometry and status meanings. Light uses white
 reading surfaces, dark text and an opaque header, with decorative matrix hidden.
 
 Appearance belongs to a browser profile or desktop client, not an account or
-server setting. Existing saved Light/Dark choices keep their meaning. Storage
+server setting — with one named exception: the GPU-safe toggle in the same
+section persists OUROBOROS_GPU_SAFE server-side so the launcher can apply the
+WebKit software-compositing vars before the desktop window starts. Existing saved Light/Dark choices keep their meaning. Storage
 failures are visible; clearing site data returns the choice to System. Switching
 repaints mounted charts and diagrams without rebuilding views or losing drafts.
 Independent iframe interiors remain author-owned, not automatically recoloured.

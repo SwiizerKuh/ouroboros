@@ -50,6 +50,7 @@ from ouroboros.config import (
 )
 from ouroboros.launcher_bootstrap import (
     BootstrapContext,
+    apply_gpu_safe_env,
     bootstrap_repo as _bootstrap_repo,
     check_git as _check_git,
     install_deps as _install_deps_impl,
@@ -222,14 +223,11 @@ _agent_job: Optional[object] = None
 _agent_lock = threading.Lock()
 _shutdown_event = threading.Event()
 # Set by _request_agent_restart(): the next agent exit is a REQUESTED recycle
-# (first-run configuration adopted), not a crash — same shape as the exit-code-42
-# branch, for the case where the launcher, not the agent, decided the restart.
+# (first-run config adopted), not a crash — same shape as the exit-code-42 branch.
 _agent_restart_requested = threading.Event()
 _webview_window = None
 # Linux-only browser-fallback flag (#56): set by _detect_headless() when no
-# pywebview GUI backend can initialize. Stays False on macOS/Windows — the
-# probe never runs there, so every `if _headless:` branch is dead code on
-# those platforms and their behavior is unchanged.
+# pywebview backend initializes. Always False on macOS/Windows.
 _headless = False
 _external_ui = False
 _external_host_update: Optional[pathlib.Path] = None
@@ -396,18 +394,16 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     env["OUROBOROS_APP_VERSION"] = str(APP_VERSION)
     env["OUROBOROS_MANAGED_BY_LAUNCHER"] = "1"
     env["OUROBOROS_MANAGED_REPO_DIR"] = str(REPO_DIR.resolve())
-    # Owner Surface Fact: the launcher alone knows presentation; `_headless` is decided in main() before the
-    # lifecycle loop ever calls start_agent(), and every managed restart funnels
-    # back through here, so the export is re-stamped fresh each time. Absence of
-    # the var (source mode, Docker, Colab, CLI server) truthfully means "web".
-    # Env-only by design — never a SETTINGS_DEFAULTS key (pop-on-absent would
-    # erase an injected value). Known bounded lie: a SIGKILLed launcher can
-    # orphan the server with a stale "desktop_window" until the next launcher
-    # start reaps it — the same envelope OUROBOROS_MANAGED_BY_LAUNCHER accepts.
+    # Presentation is launcher-known (`_headless` set in main()); re-stamped every
+    # start. Absent (source/Docker/Colab/CLI) means "web". Env-only, never a
+    # settings key. Bounded lie: a SIGKILLed launcher can orphan the server with
+    # a stale value until the next start reaps it.
     env["OUROBOROS_PRESENTATION"] = (
         str(os.environ.get("OUROBOROS_PRESENTATION") or "web")
         if _external_ui else "browser_fallback" if _headless else "desktop_window"
     )
+    # GPU-safe: server child inherits the WebKit vars (desktop view covered in main()).
+    apply_gpu_safe_env(settings, env, log, sync_os=True)
     if _external_host_update is not None:
         env["OUROBOROS_EXTERNAL_HOST_UPDATE"] = str(_external_host_update)
         env["OUROBOROS_EXTERNAL_HOST_RESULT"] = json.dumps(_external_host_result)
@@ -1189,14 +1185,8 @@ def main(argv=()):
     if not acquire_pid_lock():
         log.error("Another instance already running.")
         if _headless:
-            # The lock loss usually races the FIRST launcher's bootstrap
-            # (repeated Open clicks): the port file may be absent (unlinked
-            # pre-start) or stale from an older run on another port. Poll
-            # briefly for a healthy server, re-reading the file between
-            # probes, so Open during bootstrap lands on the live UI; on
-            # timeout fall back to the last-read port (best-effort notice;
-            # the bound is soft — a probe straddling the deadline may run
-            # its own urlopen timeout, a couple of seconds of overshoot).
+            # Lock loss usually races the first launcher's bootstrap: poll briefly
+            # for a healthy server, re-reading the port file, then report it.
             port = _read_port_file()
             deadline = time.time() + 10.0
             while time.time() < deadline and not _wait_for_server(port, timeout=1.0):
@@ -1207,12 +1197,8 @@ def main(argv=()):
                 f"Ouroboros is already running at {existing_url}",
                 file=sys.stderr,
             )
-            # Desktop-icon launches have no visible stderr, so the notice
-            # alone reads as "Open does nothing". Surface the running
-            # instance the same way a fresh headless boot would — open the
-            # default browser at it. Bounded join: the open rides a daemon
-            # thread (see _open_browser_detached), and returning immediately
-            # would end the process under the opener before it fires.
+            # No visible stderr on desktop-icon launch: open the running instance
+            # in the default browser (bounded join so the opener survives it).
             if not _external_ui:
                 _open_browser_detached(existing_url).join(timeout=5.0)
             return
@@ -1327,6 +1313,12 @@ def main(argv=()):
     # (single-instance lock, Git, managed-repo bootstrap/seed validation) is a
     # precondition of the server itself and deliberately still precedes it.
     onboarding_settings, onboarding_required = _prepare_first_run_settings()
+
+    # GPU-safe: persisted setting into THIS process before any webview.start().
+    try:
+        apply_gpu_safe_env(_load_settings(), os.environ, log)
+    except Exception:
+        log.warning("GPU-safe env setup failed; continuing without it", exc_info=True)
 
     global _webview_window
     port = AGENT_SERVER_PORT
@@ -1496,6 +1488,13 @@ def main(argv=()):
             except Exception as exc:
                 log.warning("Skill grant native confirmation failed: %s", exc, exc_info=True)
                 return {"ok": False, "error": f"Native confirmation failed: {exc}"}
+
+        def restart_desktop_app(self) -> dict:
+            """Re-exec the launcher so the desktop WebKit view recreates (GPU-safe)."""
+            from ouroboros.launcher_bootstrap import restart_desktop_app as _restart_app
+            return _restart_app(load_settings=_load_settings, stop_agent=stop_agent,
+                                embedded_python=EMBEDDED_PYTHON, repo_dir=REPO_DIR,
+                                launch_argv=_launch_argv, log=log)
 
         def download_file_to_downloads(self, url: str, filename: str, open_external: bool = False) -> dict:
             try:

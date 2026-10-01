@@ -20,8 +20,12 @@ the structural fact, no browser needed.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web"
@@ -101,6 +105,67 @@ def test_appearance_is_a_named_destination_that_never_reaches_the_server():
         )
     collector = _read("web/modules/settings.js")
     assert 'input[id^="s-"]' in collector, "the collector moved; re-check this guard"
+
+
+def test_gpu_safe_is_the_named_appearance_exception():
+    """GPU-safe lives under Appearance at the owner's request but saves server-side.
+
+    The theme + notifications stay client-local (guard above). GPU-safe is the
+    ONE named exception: the launcher must read it before the desktop window
+    starts, so it persists OUROBOROS_GPU_SAFE via a partial single-key POST,
+    never the s- collector (no s- id), with a confirm + full app restart.
+    """
+    ui = _read("web/modules/settings_ui.js")
+    assert "data-gpu-safe-toggle" in ui, "GPU-safe toggle missing from Appearance"
+    panel = re.search(
+        r'data-settings-panel="appearance"(.*?)</section>', ui, re.S).group(1)
+    assert "data-gpu-safe-toggle" in panel, "GPU-safe toggle must live under Appearance"
+    assert "OUROBOROS_GPU_SAFE" in ui, "toggle copy must name the persisted setting"
+    js = _read("web/modules/settings.js")
+    assert "mountGpuSafe" in js, "GPU-safe mount missing from settings.js"
+    gpu_js = _read("web/modules/gpu_safe.js")
+    assert "restart_desktop_app" in gpu_js, "toggle must prefer the desktop bridge restart"
+    assert "OUROBOROS_GPU_SAFE" in gpu_js, "toggle must persist OUROBOROS_GPU_SAFE"
+    launcher = _read("launcher.py")
+    assert "apply_gpu_safe_env" in launcher, "launcher helper missing"
+    gpu_mod = _read("ouroboros/launcher_bootstrap.py")
+    assert "WEBKIT_DISABLE_COMPOSITING_MODE" in gpu_mod
+    assert "WEBKIT_DISABLE_DMABUF_RENDERER" in gpu_mod
+    assert "restart_desktop_app" in launcher, "desktop restart bridge missing"
+
+
+def test_gpu_safe_env_mapping_sets_and_clears_both_vars():
+    from ouroboros.launcher_bootstrap import (
+        GPU_SAFE_ENV_VARS,
+        apply_gpu_safe_env,
+        is_gpu_safe_enabled,
+    )
+    assert is_gpu_safe_enabled({"OUROBOROS_GPU_SAFE": True}) is True
+    assert is_gpu_safe_enabled({"OUROBOROS_GPU_SAFE": "true"}) is True
+    assert is_gpu_safe_enabled({"OUROBOROS_GPU_SAFE": False}) is False
+    assert is_gpu_safe_enabled({}) is False
+    env: dict = {}
+    assert apply_gpu_safe_env({"OUROBOROS_GPU_SAFE": True}, env) is True
+    assert all(env[key] == "1" for key in GPU_SAFE_ENV_VARS)
+    assert apply_gpu_safe_env({"OUROBOROS_GPU_SAFE": False}, env) is False
+    assert all(key not in env for key in GPU_SAFE_ENV_VARS)
+    # Off clears even a hand-exported value: the setting owns both vars.
+    env = {key: "1" for key in GPU_SAFE_ENV_VARS}
+    apply_gpu_safe_env({"OUROBOROS_GPU_SAFE": False}, env)
+    assert all(key not in env for key in GPU_SAFE_ENV_VARS)
+    # sync_os mirrors into the process environment and back out again.
+    old = {key: os.environ.get(key) for key in GPU_SAFE_ENV_VARS}
+    try:
+        apply_gpu_safe_env({"OUROBOROS_GPU_SAFE": True}, {}, sync_os=True)
+        assert all(os.environ.get(key) == "1" for key in GPU_SAFE_ENV_VARS)
+        apply_gpu_safe_env({"OUROBOROS_GPU_SAFE": False}, {}, sync_os=True)
+        assert all(key not in os.environ for key in GPU_SAFE_ENV_VARS)
+    finally:
+        for key in GPU_SAFE_ENV_VARS:
+            if old[key] is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old[key]
 
 
 def test_the_onboarding_wizard_is_no_longer_pinned_to_the_viewport():

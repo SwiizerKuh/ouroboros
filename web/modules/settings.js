@@ -18,6 +18,7 @@ import {
     setSubagentsSourceContext,
 } from './subagents_settings.js';
 import { initHarnessAccounts } from './harness_accounts.js';
+import { mountGpuSafe } from './gpu_safe.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { PROVIDER_TEST_INPUTS, SECRET_KEYS, bindSecretInputs, bindSettingsTabs, renderSettingsPage } from './settings_ui.js';
 import { showToast } from './toast.js';
@@ -467,6 +468,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // Notification preferences are client-local for the same reason; the module
     // owns delegated handlers, so mounting only paints current state.
     getNotifier().mountSettings(page);
+    const disposeGpuSafe = mountGpuSafe(page, { ws });
     const disposeLocalModel = bindLocalModelControls({ state,
         onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
     // Best-effort About version from /api/health.
@@ -1193,6 +1195,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         disposeSettingsTabs();
         window.removeEventListener('beforeunload', beforeUnload);
         disposeLocalModel();
+        disposeGpuSafe();
         disposeRestartReconnect?.();
         accountModelCatalog.dispose();
         restartReadSequence += 1;

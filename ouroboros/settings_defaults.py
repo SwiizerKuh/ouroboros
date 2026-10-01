@@ -322,6 +322,11 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "USE_LOCAL_CONSCIOUSNESS": False,
     "USE_LOCAL_FALLBACK": False,
     "OUROBOROS_FILE_BROWSER_DEFAULT": "",
+    # GPU-safe desktop mode (Intel i915 hang workaround, user-space only):
+    # when true the launcher runs the desktop WebKit view with software
+    # compositing (WEBKIT_DISABLE_COMPOSITING_MODE=1 and
+    # WEBKIT_DISABLE_DMABUF_RENDERER=1). No kernel/firmware/Mesa changes.
+    "OUROBOROS_GPU_SAFE": False,
     # 429-aware cross-model fallback: process-local cooldown for transiently failing
     # models (429/5xx/overloaded), passive heal-back. Owner-tunable; default-on, fail-soft.
     "OUROBOROS_FALLBACK_COOLDOWN_ENABLED": True,

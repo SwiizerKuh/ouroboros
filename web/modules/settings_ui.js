@@ -751,6 +751,26 @@ export function renderSettingsPage() {
                             <div data-theme-control aria-labelledby="s-appearance-theme-label"></div>
                             <div class="settings-inline-note theme-status" data-theme-status role="status" aria-live="polite"></div>
                         </div>
+                        <div class="settings-effort-card" data-gpu-safe-block>
+                            <label class="local-toggle ui-field ui-field-inline">
+                                <input type="checkbox" class="ui-checkbox" data-gpu-safe-toggle>
+                                GPU-safe mode (software compositing)
+                            </label>
+                            <div class="settings-section-copy">
+                                Named exception: unlike the theme above, this is a
+                                machine-level setting saved to the server
+                                (<code>OUROBOROS_GPU_SAFE</code>), because the launcher
+                                must read it before the desktop window starts.
+                                When on, the app restarts with
+                                <code>WEBKIT_DISABLE_COMPOSITING_MODE=1</code> and
+                                <code>WEBKIT_DISABLE_DMABUF_RENDERER=1</code>
+                                (user-space Intel i915 hang workaround; no kernel changes).
+                                The setting owns both variables while enabled: turning
+                                it off clears them, including hand-exported values.
+                                Toggling restarts the app to apply it.
+                            </div>
+                            <div class="settings-inline-note" data-gpu-safe-status role="status" aria-live="polite"></div>
+                        </div>
                     </div>
 
                     <div class="form-section" data-notify-settings>

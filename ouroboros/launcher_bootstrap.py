@@ -1147,3 +1147,57 @@ def automatic_launch_allowed(intent: str, data_dir: pathlib.Path, log: Any) -> b
             print("Ouroboros is stopped. Use Start to resume.", flush=True)
             return False
     return True
+
+# GPU-safe desktop mode (Intel i915 hang workaround, user-space only): when
+# OUROBOROS_GPU_SAFE is true the launcher runs the desktop WebKit view with
+# software compositing. No kernel/firmware/Mesa changes.
+GPU_SAFE_ENV_VARS = ("WEBKIT_DISABLE_COMPOSITING_MODE", "WEBKIT_DISABLE_DMABUF_RENDERER")
+
+
+def is_gpu_safe_enabled(settings: dict) -> bool:
+    raw = (settings or {}).get("OUROBOROS_GPU_SAFE")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_gpu_safe_env(settings: dict, env: dict, log=None, sync_os: bool = False) -> bool:
+    enabled = is_gpu_safe_enabled(settings)
+    for key in GPU_SAFE_ENV_VARS:
+        if enabled:
+            env[key] = "1"
+        else:
+            env.pop(key, None)
+    if sync_os:
+        import os as _os
+        for key in GPU_SAFE_ENV_VARS:
+            if enabled:
+                _os.environ[key] = "1"
+            else:
+                _os.environ.pop(key, None)
+    if log is not None:
+        try:
+            log.info("GPU-safe mode %s", "enabled" if enabled else "disabled")
+        except Exception:
+            pass
+    return enabled
+
+
+def restart_desktop_app(*, load_settings, stop_agent, embedded_python, repo_dir, launch_argv, log) -> dict:
+    try:
+        try:
+            apply_gpu_safe_env(load_settings(), __import__("os").environ, log)
+        except Exception:
+            log.warning("GPU-safe env refresh failed; restarting anyway", exc_info=True)
+        try:
+            stop_agent()
+        except Exception:
+            log.warning("Server stop before desktop restart failed", exc_info=True)
+        import os as _os
+        argv = [embedded_python, str(repo_dir / "launcher.py"), *launch_argv]
+        log.info("Restarting desktop app to apply GPU-safe mode")
+        _os.execv(embedded_python, argv)
+        return {"ok": True}
+    except Exception as exc:
+        log.warning("Desktop restart failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc)}

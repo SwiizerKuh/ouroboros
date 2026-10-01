@@ -215,6 +215,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |
 | GITHUB_REPO | "" | Personal `origin` repository |
 | OUROBOROS_FILE_BROWSER_DEFAULT | "" | File Browser default root (explicit root required for Docker/non-localhost) |
+| OUROBOROS_GPU_SAFE | false | GPU-safe desktop mode: launcher sets WEBKIT_DISABLE_COMPOSITING_MODE=1 + WEBKIT_DISABLE_DMABUF_RENDERER=1 before the desktop view (user-space Intel hang workaround; no kernel changes) |
 
 #### Reviewer slots
 

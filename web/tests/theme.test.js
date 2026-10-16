@@ -7,10 +7,10 @@ const source = fs.readFileSync(new URL('../theme.js', import.meta.url), 'utf8');
 
 /* A fake just wide enough for the controller: it renders its own buttons, so the
    harness has to hand back real child nodes rather than one stubbed element. */
-function boot({ saved = null, storage = true, systemLight = false, media = true } = {}) {
+function boot({ saved = null, storage = true, systemLight = false, media = true, uiStyle = null } = {}) {
     const handlers = new Map();
     const events = [];
-    const root = { dataset: {} };
+    const root = { dataset: uiStyle ? { uiStyle } : {} };
     const status = { textContent: '' };
     let host;
 
@@ -193,4 +193,62 @@ test('both first-party documents load the controller before CSS', () => {
     assert.doesNotMatch(index, /data-theme-toggle|data-theme-control/);
     assert.match(fs.readFileSync(new URL('../onboarding_template.html', import.meta.url), 'utf8'), /data-theme-control/);
     assert.match(fs.readFileSync(new URL('../modules/settings_ui.js', import.meta.url), 'utf8'), /data-theme-control/);
+});
+
+test('terminal style forces dark over every saved choice and OS preference', () => {
+    for (const saved of [null, 'light', 'dark', 'system']) {
+        const s = boot({ uiStyle: 'terminal', saved, systemLight: true });
+        assert.equal(s.root.dataset.theme, 'dark', `saved=${saved}`);
+        assert.equal(s.window.ouroTheme.theme, 'dark');
+        assert.equal(s.window.ouroTheme.style, 'terminal');
+    }
+    assert.equal(boot({ uiStyle: 'terminal', media: false }).root.dataset.theme, 'dark');
+    assert.equal(boot().window.ouroTheme.style, 'default');
+    assert.equal(boot({ uiStyle: 'other' }).window.ouroTheme.style, 'default');
+});
+
+test('terminal style preserves the stored choice and says why', () => {
+    const s = boot({ uiStyle: 'terminal', saved: 'light' });
+    assert.equal(s.saved(), 'light');                       // boot never rewrites storage
+    assert.equal(s.root.dataset.themeChoice, 'light');      // the choice survives, only painting is locked
+    assert.equal(s.button('light').attrs['aria-checked'], 'true');
+    assert.match(s.status.textContent, /GPU-safe terminal style overrides Appearance/);
+    // Picking while locked still records the choice for when GPU-safe goes off,
+    // but paints nothing and tells no mounted view to redraw.
+    s.click('system');
+    assert.equal(s.saved(), 'system');
+    assert.equal(s.root.dataset.themeChoice, 'system');
+    assert.equal(s.root.dataset.theme, 'dark');
+    assert.equal(s.events.length, 0);
+    // A sibling window changing the choice is the same story.
+    s.setSaved('light');
+    s.handlers.get('storage')({ key: 'ouroboros.theme' });
+    assert.equal(s.root.dataset.themeChoice, 'light');
+    assert.equal(s.root.dataset.theme, 'dark');
+    assert.equal(s.events.length, 0);
+    // The upgrade path is intact: the same storage under the default style paints it.
+    assert.equal(boot({ saved: s.saved() }).root.dataset.theme, 'light');
+});
+
+test('terminal style registers no prefers-color-scheme listener', () => {
+    const locked = boot({ uiStyle: 'terminal', saved: 'system', systemLight: false });
+    assert.equal(locked.handlers.has('media:change'), false);
+    // Even if a stray handler existed, an OS flip must not repaint a locked page.
+    locked.query.matches = true;
+    assert.equal(locked.root.dataset.theme, 'dark');
+    // Control: the default style does subscribe, so the assertion above has teeth.
+    assert.equal(boot({ saved: 'system' }).handlers.has('media:change'), true);
+    // Non-media lifecycle is unchanged under the lock.
+    assert.ok(locked.handlers.has('click') && locked.handlers.has('storage'));
+    locked.handlers.get('pagehide')({ persisted: false });
+    assert.equal(locked.handlers.size, 0);
+});
+
+test('terminal.css loads after the sheets in both first-party documents', () => {
+    for (const name of ['index.html', 'onboarding_template.html']) {
+        const html = fs.readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
+        const links = [...html.matchAll(/<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"/g)].map((m) => m[1]);
+        assert.equal(links.at(-1), '/static/terminal.css', name);
+        assert.ok(html.indexOf('/static/theme.js') < html.indexOf('/static/terminal.css'));
+    }
 });

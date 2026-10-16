@@ -119,31 +119,22 @@ def test_scroll_fade_tracks_edges_late_content_and_stops_after_disposal(subscrip
     page.evaluate("shellFade.el.remove()")
 
 
-def test_matrix_respects_reduced_motion_changes_and_page_cleanup(subscription_ui):
+@pytest.mark.parametrize("motion", ["no-preference", "reduce"])
+def test_shell_paints_no_matrix_rain_canvas(subscription_ui, motion):
+    # initMatrixRain was deleted (web/app.js, web/modules/utils.js) and the
+    # #matrix-rain CSS removed from style.css: no canvas may exist in any mode,
+    # at load, after a lifecycle event, or under either motion preference.
     page = subscription_ui["page"]
-    page.emulate_media(reduced_motion="reduce")
+    page.emulate_media(reduced_motion=motion)
     open_app(subscription_ui)
-    page.wait_for_selector("#matrix-rain", state="attached")
-    sample = "document.querySelector('#matrix-rain').toDataURL()"
-    first = page.evaluate(sample)
-    page.wait_for_timeout(200)
-    assert page.evaluate(sample) == first
-    setup_browser.capture(page, "shell-rain-reduced")
-    page.emulate_media(reduced_motion="no-preference")
-    page.wait_for_function("before => document.querySelector('#matrix-rain').toDataURL() !== before", arg=first)
-    page.emulate_media(reduced_motion="reduce")
-    page.wait_for_timeout(100)
-    frozen = page.evaluate(sample)
-    page.wait_for_timeout(200)
-    assert page.evaluate(sample) == frozen
-    page.evaluate("""() => {window.shellRain=document.querySelector('#matrix-rain');
-        window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false}));}""")
+    page.wait_for_timeout(300)  # beyond the rAF/interval turns the old loop started in
     assert page.locator("#matrix-rain").count() == 0
-    before = page.evaluate("[shellRain.width,shellRain.height,shellRain.toDataURL()]")
+    assert page.evaluate("document.querySelectorAll('canvas#matrix-rain, body > canvas').length") == 0
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false}))")
     page.set_viewport_size({"width": 700, "height": 400})
-    page.emulate_media(reduced_motion="no-preference")
-    page.wait_for_timeout(200)
-    assert page.evaluate("[shellRain.width,shellRain.height,shellRain.toDataURL()]") == before
+    page.wait_for_timeout(100)
+    assert page.locator("#matrix-rain").count() == 0
+    setup_browser.capture(page, f"shell-no-rain-{motion}")
 
 
 @pytest.mark.parametrize("height", [260, 600])

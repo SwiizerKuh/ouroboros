@@ -768,6 +768,11 @@ export function renderSettingsPage() {
                                 The setting owns both variables while enabled: turning
                                 it off clears them, including hand-exported values.
                                 Toggling restarts the app to apply it.
+                                When on, the app also paints the GPU-safe
+                                terminal style (flat surfaces, no hover
+                                effects, minimal motion); your Light / Dark /
+                                System choice is preserved and returns when
+                                GPU-safe is off.
                             </div>
                             <div class="settings-inline-note" data-gpu-safe-status role="status" aria-live="polite"></div>
                         </div>

@@ -209,3 +209,149 @@ def test_surface_sheets_carry_no_near_white_ink():
         if near_white.search(line)
     ]
     assert not leftovers, "near-white literals outside the token sheet:\n" + "\n".join(leftovers)
+
+
+# --- GPU-safe terminal restyle guards ---------------------------------------
+
+_STYLESHEET_LINK = re.compile(r'<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"')
+_HOVER_GUARD = ':where(:root:not([data-ui-style="terminal"]))'
+_TERMINAL_ROOT = ':root[data-ui-style="terminal"]'
+_HOUSE_SHEETS = ("style.css", "ui.css", "settings.css", "onboarding.css")
+
+
+def _strip_css_comments(css: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
+def _selectors(css: str):
+    """Yield every selector (comma-split at paren/bracket depth 0) of every rule."""
+    for prelude in re.findall(r"([^{}]+)\{", _strip_css_comments(css)):
+        depth, current = 0, ""
+        for ch in prelude:
+            depth += ch in "([" ; depth -= ch in ")]"
+            if ch == "," and depth == 0:
+                yield current.strip()
+                current = ""
+            else:
+                current += ch
+        yield current.strip()
+
+
+def test_terminal_stamp_is_server_side_and_only_when_gpu_safe_is_on():
+    for rel in ("web/index.html", "web/onboarding_template.html"):
+        assert not re.search(r"<html[^>]*data-ui-style", _read(rel)), (
+            f"{rel} must not be pre-stamped; the gateway adds it only when GPU-safe is on")
+    from ouroboros.server_web import _terminal_style_on
+    assert _terminal_style_on(None) is False
+    assert _terminal_style_on(lambda: {"OUROBOROS_GPU_SAFE": True}) is True
+    assert _terminal_style_on(lambda: {"OUROBOROS_GPU_SAFE": False}) is False
+    assert _terminal_style_on(lambda: {}) is False
+
+    def broken():
+        raise OSError("settings unreadable")
+    assert _terminal_style_on(broken) is False  # a failing read never paints terminal
+    web = _read("ouroboros/server_web.py")
+    page = web.split("def make_index_page", 1)[1].split("def _terminal_style_on", 1)[0]
+    assert "if not (telegram or terminal):" in page
+    assert page.index("FileResponse(str(index)") < page.index("stamp_terminal_document(html)")
+    assert "if terminal:" in page
+    wizard = _read("ouroboros/onboarding_wizard.py")
+    gate = wizard.index("if is_gpu_safe_enabled(settings):")
+    assert gate < wizard.index("stamp_terminal_document(html)")
+
+
+def test_theme_js_terminal_override_branch_forces_dark_and_skips_the_media_listener():
+    js = _read("web/theme.js")
+    assert "root.dataset.uiStyle === 'terminal'" in js
+    assert re.search(r"const resolve = \(value\) => \{\s*if \(locked\) return 'dark';", js)
+    assert "const onSystemChange = () => { if (!locked && choice === 'system') settle(); };" in js
+    assert "if (!locked) query?.addEventListener?.('change', onSystemChange);" in js
+    # The stored choice is never rewritten by the lock: only resolve() is overridden.
+    assert "if (locked) choice" not in js and "if (locked) localStorage" not in js
+
+
+def test_terminal_css_is_linked_last_in_both_first_party_documents():
+    for rel in ("web/index.html", "web/onboarding_template.html"):
+        hrefs = _STYLESHEET_LINK.findall(_read(rel))
+        assert hrefs.count("/static/terminal.css") == 1, rel
+        assert hrefs[-1] == "/static/terminal.css", f"{rel}: terminal.css must load after every sheet: {hrefs}"
+        assert {"/static/ui.css"} <= set(hrefs[:-1])
+    index = _STYLESHEET_LINK.findall(_read("web/index.html"))
+    assert index.index("/static/model_wait.css") < index.index("/static/terminal.css")
+    wizard = _STYLESHEET_LINK.findall(_read("web/onboarding_template.html"))
+    assert wizard.index("/static/onboarding.css") < wizard.index("/static/terminal.css")
+    assert (WEB / "terminal.css").is_file()
+
+
+def test_every_terminal_css_rule_is_scoped_to_the_terminal_root():
+    css = _read("web/terminal.css")
+    stray = []
+    for selector in _selectors(css):
+        if (not selector or selector.startswith("@") or selector in {"from", "to"}
+                or re.fullmatch(r"[\d.%\s,]+", selector)):  # @keyframes stops
+            continue
+        if not selector.startswith(_TERMINAL_ROOT):
+            stray.append(selector)
+    assert not stray, "terminal.css rules that would paint outside terminal mode:\n" + "\n".join(stray)
+
+
+def test_every_hover_selector_is_under_the_terminal_guard():
+    unguarded = []
+    for name in _HOUSE_SHEETS:
+        for selector in _selectors(_read(f"web/{name}")):
+            if ":hover" in selector and not selector.startswith(_HOVER_GUARD):
+                unguarded.append(f"{name}: {selector}")
+    assert not unguarded, "hover rules the terminal style cannot switch off:\n" + "\n".join(unguarded)
+
+
+def test_terminal_css_motion_stays_within_150ms_except_the_stepped_caret():
+    css = _strip_css_comments(_read("web/terminal.css"))
+    caret = []
+    for prop, value in re.findall(r"((?:transition|animation)(?:-duration)?)\s*:\s*([^;}]+)", css):
+        if "terminal-caret" in value:
+            caret.append(value)
+            assert "steps(1" in value, "the caret blink must be a hard on/off, never an eased fade"
+            continue
+        for amount, unit in re.findall(r"(?<![\w.-])(\d*\.?\d+)(ms|s)\b", value):
+            millis = float(amount) * (1000 if unit == "s" else 1)
+            assert millis <= 150, f"{prop}: {value.strip()} exceeds 150ms"
+    assert len(caret) == 1, "exactly one declaration may run past 150ms: the caret"
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    reduced = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert "animation: none" in reduced and "transition: none" in reduced
+    # The generic :where() reset carries no specificity, so the caret rule and
+    # the class allowlist rules would keep winning without explicit repeats.
+    # Assert the winning rules themselves reappear inside the media block.
+    assert "textarea" in reduced, "the caret selector must repeat inside reduced-motion"
+    caret_rule = reduced.split("textarea", 1)[1].split("}", 1)[0]
+    assert "animation: none" in caret_rule, "the repeated caret rule must clear the blink"
+    for selector in (".project-panel", ".toast", ".chat-live-chevron"):
+        assert selector in reduced, f"{selector} allowlist must repeat inside reduced-motion"
+    tail = reduced.split(".chat-live-chevron", 1)[1].split("}", 1)[0]
+    assert "transition: none" in tail
+
+
+def test_terminal_spinners_are_static_glyphs():
+    css = _strip_css_comments(_read("web/terminal.css"))
+    assert 'content: "[*]"' in css and 'content: "…"' in css
+
+
+def test_matrix_rain_is_gone_from_web():
+    offenders = []
+    for path in sorted(WEB.rglob("*")):
+        rel = path.relative_to(REPO_ROOT)
+        if (not path.is_file() or path.suffix not in {".js", ".css", ".html", ".mjs"}
+                or {"vendor", "node_modules"} & set(path.parts)):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if path.name == "terminal.css":
+            text = _strip_css_comments(text)  # comments may name the deleted function
+        if "initMatrixRain" in text:
+            offenders.append(f"{rel}: initMatrixRain")
+        if "matrix-rain" in text and path.name != "terminal.css":
+            offenders.append(f"{rel}: matrix-rain")
+    assert not offenders, "\n".join(offenders)
+    safety = [s for s in _selectors(_read("web/terminal.css")) if "matrix-rain" in s]
+    assert safety == [f"{_TERMINAL_ROOT} #matrix-rain"], "only the display:none safety rule may remain"
+    body = re.search(r"#matrix-rain\s*\{([^}]*)\}", _read("web/terminal.css")).group(1)
+    assert body.strip() == "display: none;"

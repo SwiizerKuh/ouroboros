@@ -362,6 +362,38 @@ def _js_sources() -> str:
     )
 
 
+def _server_palette_declarations() -> set[str]:
+    """Custom properties the gateway inlines as ``<style id="omarchy-palette">``.
+
+    ``ouroboros/omarchy_theme.py`` emits ``:root{--omarchy-*}`` for the active
+    Omarchy palette (GPU-safe terminal style); the declaration lives in Python,
+    so the stylesheet scan cannot see it. Derive the emitted names from the
+    module's own ``REQUIRED_KEYS``/``OPTIONAL_KEYS`` tuples (read as text, like
+    every other source in this file): ``--omarchy-<key>`` plus its ``-rgb``
+    channel triple, and ``--omarchy-color-scheme``. A ``--omarchy-*`` name the
+    module does not emit still fails the test below. Unparseable module source
+    declares nothing (fail-closed).
+    """
+    try:
+        source = (REPO_ROOT / "ouroboros" / "omarchy_theme.py").read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    keys: list[str] = []
+    for tuple_name in ("REQUIRED_KEYS", "OPTIONAL_KEYS"):
+        match = re.search(tuple_name + r"\s*=\s*\((.*?)\)", source, re.S)
+        if not match:
+            return set()
+        keys.extend(re.findall(r'"([^"]+)"', match.group(1)))
+    if not keys:
+        return set()
+    declared = {"--omarchy-color-scheme"}
+    for key in keys:
+        dashed = "--omarchy-" + key.replace("_", "-")
+        declared.add(dashed)
+        declared.add(dashed + "-rgb")
+    return declared
+
+
 def test_every_css_variable_is_declared_somewhere() -> None:
     """A `var(--typo)` is silent: the declaration simply does not apply and the
     property keeps whatever it inherited. This codebase had six of them —
@@ -373,10 +405,12 @@ def test_every_css_variable_is_declared_somewhere() -> None:
     # style string. A read (`getPropertyValue('--x')`) consumes one, so it must not vouch for it.
     js_written = set(re.findall(r"""setProperty\(\s*['"`](--[\w-]+)|(?<![\w-])(--[a-z][\w-]*)\s*:""", _js_sources()))
     js_written = {name for pair in js_written for name in pair if name}
+    server_palette = _server_palette_declarations()
     dangling: list[str] = []
     for document in ("web/index.html", "web/onboarding_template.html"):
         sheets = _document_stylesheets(document)
         declared = set().union(*(set(DECLARATION.findall(_decommented(_read(rel)))) for rel in sheets))
+        declared |= server_palette
         for rel in sheets:
             for lineno, line in enumerate(_decommented(_read(rel)).splitlines(), 1):
                 for name in VAR_REFERENCE.findall(line):

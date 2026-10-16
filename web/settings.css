@@ -702,7 +702,7 @@
 }
 
 .settings-effort-btn.active,
-.settings-effort-btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .settings-effort-btn:hover {
     color: var(--text-primary);
     border-color: rgba(232, 93, 111, 0.35);
     background: rgba(232, 93, 111, 0.12);
@@ -732,7 +732,7 @@
     cursor: not-allowed;
     opacity: 0.55;
 }
-.settings-effort-btn:disabled:hover {
+:where(:root:not([data-ui-style="terminal"])) .settings-effort-btn:disabled:hover {
     background: rgba(var(--neutral-rgb), 0.04);
     border-color: rgba(var(--neutral-rgb), 0.08);
     color: var(--text-secondary);
@@ -744,14 +744,14 @@
    ~2:1 on the light surface and unreadable when selected. --status-warn-fg is
    the token that already carries a legible warn tint per theme. */
 [data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"].active,
-[data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"]:hover {
+:where(:root:not([data-ui-style="terminal"])) [data-enforcement-group] .settings-effort-btn[data-effort-value="advisory"]:hover {
     color: var(--status-warn-fg);
     border-color: var(--status-warn-border);
     background: var(--status-warn-bg);
 }
 
 [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"].active,
-[data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"]:hover {
+:where(:root:not([data-ui-style="terminal"])) [data-enforcement-group] .settings-effort-btn[data-effort-value="blocking"]:hover {
     color: var(--text-primary);
     border-color: rgba(232, 93, 111, 0.5);
     background: var(--accent-18);

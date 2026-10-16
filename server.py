@@ -1241,7 +1241,7 @@ async def api_settings_post(request):
 
 web_dir = resolve_web_dir(REPO_DIR)
 web_dir.mkdir(parents=True, exist_ok=True)
-index_page = make_index_page(web_dir)
+index_page = make_index_page(web_dir, load_settings=load_settings)
 
 routes = [
     Route("/", endpoint=index_page),

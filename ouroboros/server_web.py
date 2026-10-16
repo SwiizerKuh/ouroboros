@@ -60,18 +60,36 @@ class NoCacheStaticFiles:
             await self._app(scope, receive, send)
 
 
-def make_index_page(web_dir: pathlib.Path):
+def make_index_page(web_dir: pathlib.Path, load_settings=None):
     async def index_page(_request) -> FileResponse | HTMLResponse:
         index = web_dir / "index.html"
         if index.exists():
-            if _request.headers.get("X-Ouroboros-Telegram-MiniApp") == "1":
+            telegram = _request.headers.get("X-Ouroboros-Telegram-MiniApp") == "1"
+            terminal = _terminal_style_on(load_settings)
+            if not (telegram or terminal):
+                return FileResponse(str(index), media_type="text/html")
+            html = index.read_text(encoding="utf-8")
+            if telegram:
                 # The authenticated sidecar proxy already stamps this presentation
                 # hint. Bootstrap navigates to this document, so it needs its own SDK.
-                html = index.read_text(encoding="utf-8")
                 html = html.replace("<html", '<html data-ouroboros-host="telegram"', 1)
                 html = html.replace("<head>", '<head><script async src="https://telegram.org/js/telegram-web-app.js"></script>', 1)
-                return HTMLResponse(html)
-            return FileResponse(str(index), media_type="text/html")
+            if terminal:
+                from ouroboros.omarchy_theme import stamp_terminal_document
+
+                html = stamp_terminal_document(html)
+            return HTMLResponse(html)
         return HTMLResponse("<html><body><h1>Ouroboros — web/ not found</h1></body></html>", status_code=404)
 
     return index_page
+
+
+def _terminal_style_on(load_settings) -> bool:
+    if load_settings is None:
+        return False
+    from ouroboros.launcher_bootstrap import is_gpu_safe_enabled
+
+    try:
+        return bool(is_gpu_safe_enabled(load_settings()))
+    except Exception:
+        return False

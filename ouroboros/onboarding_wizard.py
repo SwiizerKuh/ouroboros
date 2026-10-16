@@ -45,9 +45,19 @@ def build_onboarding_html(settings: dict, host_mode: str = "desktop", *, fresh_i
     """
     normalized_host_mode = "web" if host_mode == "web" else "desktop"
     bootstrap = build_setup_bootstrap(settings, normalized_host_mode, fresh_install=fresh_install)
-    return _read_asset(_TEMPLATE_PATH).replace(
+    html = _read_asset(_TEMPLATE_PATH).replace(
         "__ONBOARDING_BOOTSTRAP__", _bootstrap_script_json(bootstrap)
     )
+    try:
+        from ouroboros.launcher_bootstrap import is_gpu_safe_enabled
+
+        if is_gpu_safe_enabled(settings):
+            from ouroboros.omarchy_theme import stamp_terminal_document
+
+            return stamp_terminal_document(html)
+    except Exception:
+        pass
+    return html
 
 
 def prepare_onboarding_settings(data: dict, current_settings: dict) -> Tuple[dict, str | None]:

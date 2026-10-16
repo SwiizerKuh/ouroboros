@@ -13,7 +13,7 @@ dialog { margin: auto; }
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg-primary);
     color: var(--text-primary);
     height: var(--vvh);
@@ -25,17 +25,6 @@ body {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;
     height: var(--vvh);
     position: relative;
-}
-
-#matrix-rain {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    opacity: 0.12;
-    pointer-events: none;
-    z-index: 0;
 }
 
 /* App navigation shell: desktop persistent sidebar, mobile drawer below. */
@@ -77,7 +66,7 @@ body.resizing-panels { user-select: none; }
 }
 .resize-handle-right { right: -4px; }
 .resize-handle-left { left: -4px; }
-.resize-handle:hover { background: var(--accent-10); }
+:where(:root:not([data-ui-style="terminal"])) .resize-handle:hover { background: var(--accent-10); }
 @media (max-width: 980px) {
     .resize-handle { display: none; }
 }
@@ -240,8 +229,8 @@ body.resizing-panels { user-select: none; }
     box-shadow: 0 0 0 2px var(--accent-18);
 }
 
-.nav-row:hover,
-.nav-section-toggle:hover {
+:where(:root:not([data-ui-style="terminal"])) .nav-row:hover,
+:where(:root:not([data-ui-style="terminal"])) .nav-section-toggle:hover {
     background: var(--accent-08);
     border-color: transparent;
     color: var(--text-primary);
@@ -312,7 +301,7 @@ body.resizing-panels { user-select: none; }
     cursor: pointer;
 }
 
-.task-control-item:hover:not(:disabled) {
+:where(:root:not([data-ui-style="terminal"])) .task-control-item:hover:not(:disabled) {
     color: var(--text-primary);
     background: var(--menu-item-hover);
 }
@@ -358,7 +347,7 @@ body.resizing-panels { user-select: none; }
     background: var(--project-08);
     color: var(--project); font-size: var(--type-meta); line-height: var(--line-meta);
 }
-.chat-quiz-project.chat-live-project-card-btn:hover { background: var(--project-12); }
+:where(:root:not([data-ui-style="terminal"])) .chat-quiz-project.chat-live-project-card-btn:hover { background: var(--project-12); }
 .chat-quiz-project.chat-live-project-card-btn:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: 2px; }
 .chat-quiz-project .chat-live-project-icon { color: var(--project); font-size: var(--type-meta); }
 .chat-quiz-project .chat-live-project-name { font-weight: 500; color: var(--project); font-size: var(--type-meta); }
@@ -423,7 +412,7 @@ body.resizing-panels { user-select: none; }
     border-radius: inherit;
 }
 
-.chat-live-project-card-btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-live-project-card-btn:hover {
     background: var(--project-12);
 }
 
@@ -664,7 +653,7 @@ body.resizing-panels { user-select: none; }
     white-space: nowrap;
 }
 
-.files-crumb:hover {
+:where(:root:not([data-ui-style="terminal"])) .files-crumb:hover {
     color: var(--text-primary);
 }
 
@@ -696,7 +685,7 @@ body.resizing-panels { user-select: none; }
     text-align: left;
 }
 
-.files-entry:hover {
+:where(:root:not([data-ui-style="terminal"])) .files-entry:hover {
     background: rgba(var(--neutral-rgb), 0.04);
 }
 
@@ -970,7 +959,7 @@ body.resizing-panels { user-select: none; }
     transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
-.app-tab:hover { background: var(--menu-item-hover); }
+:where(:root:not([data-ui-style="terminal"])) .app-tab:hover { background: var(--menu-item-hover); }
 
 .app-tab.active,
 .app-tab.is-active {
@@ -1073,7 +1062,7 @@ body.resizing-panels { user-select: none; }
     transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
-.chat-header-btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-header-btn:hover {
     border-color: rgba(var(--neutral-rgb), 0.16);
     color: var(--text-primary);
 }
@@ -1089,7 +1078,7 @@ body.resizing-panels { user-select: none; }
     color: var(--status-error-fg);
 }
 
-.chat-header-btn.danger:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-header-btn.danger:hover {
     border-color: rgba(239, 68, 68, 0.40);
     background: rgba(239, 68, 68, 0.08);
 }
@@ -1137,7 +1126,7 @@ body.resizing-panels { user-select: none; }
     cursor: pointer;
 }
 
-.chat-header-menu-item:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-header-menu-item:hover {
     color: var(--text-primary);
     background: var(--menu-item-hover);
 }
@@ -1188,7 +1177,7 @@ body.resizing-panels { user-select: none; }
     transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
 }
 
-.chat-budget-pill:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-budget-pill:hover {
     border-color: rgba(245, 158, 11, 0.34);
     background: rgba(245, 158, 11, 0.08);
     transform: scale(1.02);
@@ -1264,7 +1253,7 @@ body.resizing-panels { user-select: none; }
     cursor: pointer;
     transition: color 0.15s ease, border-color 0.15s ease;
 }
-.chat-load-older-btn:hover:not(:disabled) {
+:where(:root:not([data-ui-style="terminal"])) .chat-load-older-btn:hover:not(:disabled) {
     color: var(--text-primary);
     border-color: var(--accent);
 }
@@ -1443,7 +1432,7 @@ body.resizing-panels { user-select: none; }
     transform: translate(-50%, 0);
     pointer-events: auto;
 }
-.chat-scroll-bottom-btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-scroll-bottom-btn:hover {
     color: var(--text-primary);
     background: var(--bg-hover);
     border-color: rgba(var(--neutral-rgb), 0.16);
@@ -1609,7 +1598,7 @@ body.resizing-panels { user-select: none; }
     text-align: left;
 }
 
-.skill-review-summary-button:hover {
+:where(:root:not([data-ui-style="terminal"])) .skill-review-summary-button:hover {
     background: rgba(245, 158, 11, 0.08);
 }
 
@@ -1666,7 +1655,7 @@ body.resizing-panels { user-select: none; }
     cursor: pointer;
 }
 
-.skill-review-retry:hover {
+:where(:root:not([data-ui-style="terminal"])) .skill-review-retry:hover {
     background: rgba(245, 158, 11, 0.12);
 }
 
@@ -1712,7 +1701,7 @@ body.resizing-panels { user-select: none; }
     user-select: none;
 }
 
-.chat-bubble:hover .msg-time {
+:where(:root:not([data-ui-style="terminal"])) .chat-bubble:hover .msg-time {
     opacity: 0.8;
 }
 
@@ -1810,7 +1799,7 @@ body.resizing-panels { user-select: none; }
     user-select: text;
 }
 
-.chat-live-summary-button:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-live-summary-button:hover {
     background: var(--accent-05);
 }
 
@@ -2406,7 +2395,7 @@ body.resizing-panels { user-select: none; }
     transition: background 0.18s ease;
 }
 
-.chat-live-line.expandable:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-live-line.expandable:hover {
     background: rgba(var(--neutral-rgb), 0.02);
 }
 
@@ -2759,7 +2748,7 @@ body.resizing-panels { user-select: none; }
     font-size: var(--type-meta);
     cursor: pointer;
 }
-.md-code-copy:hover,
+:where(:root:not([data-ui-style="terminal"])) .md-code-copy:hover,
 .md-code-copy:focus-visible {
     border-color: var(--surface-border);
     background: var(--bg-hover);
@@ -3123,7 +3112,7 @@ body.resizing-panels { user-select: none; }
     padding: 0;
 }
 
-.chat-attach-btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-attach-btn:hover {
     color: var(--text-primary);
     background: rgba(var(--neutral-rgb), 0.06);
 }
@@ -3184,7 +3173,7 @@ body.resizing-panels { user-select: none; }
     padding: 0 2px;
 }
 
-.attach-remove:hover {
+:where(:root:not([data-ui-style="terminal"])) .attach-remove:hover {
     color: var(--text-primary);
 }
 
@@ -3239,7 +3228,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     white-space: nowrap;
     transition: color 0.18s, background 0.18s, border-color 0.18s, box-shadow 0.18s;
 }
-.chat-swarm:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-swarm:hover {
     color: var(--accent);
     border-color: var(--accent-35);
     background: rgba(var(--composer-hover-rgb), 0.58);
@@ -3285,7 +3274,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
 }
-.chat-context-mode .chat-seg:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-context-mode .chat-seg:hover {
     color: var(--text-primary);
 }
 /* Active segment: Max glows accent (full context); Low glows amber (reduced). */
@@ -3335,7 +3324,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: flex;
     align-items: center;
 }
-.chat-send-inline:hover {
+:where(:root:not([data-ui-style="terminal"])) .chat-send-inline:hover {
     opacity: 1;
     background: var(--accent-18);
     border-color: var(--accent-45);
@@ -3391,7 +3380,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
     transition: border-color 0.3s;
 }
-.stat-card:hover {
+:where(:root:not([data-ui-style="terminal"])) .stat-card:hover {
     border-color: var(--accent-18);
 }
 
@@ -3530,7 +3519,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     margin-bottom: 8px;
 }
 
-.log-entry:hover {
+:where(:root:not([data-ui-style="terminal"])) .log-entry:hover {
     background: rgba(var(--neutral-rgb), 0.03);
     border-color: rgba(var(--neutral-rgb), 0.08);
 }
@@ -3621,7 +3610,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     cursor: pointer;
 }
 
-.log-raw-toggle:hover {
+:where(:root:not([data-ui-style="terminal"])) .log-raw-toggle:hover {
     color: var(--text-primary);
     border-color: rgba(var(--neutral-rgb), 0.14);
 }
@@ -3700,7 +3689,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--accent-18); border-radius: var(--radius-xs); }
-::-webkit-scrollbar-thumb:hover { background: var(--accent-35); }
+:where(:root:not([data-ui-style="terminal"])) ::-webkit-scrollbar-thumb:hover { background: var(--accent-35); }
 
 #reconnect-overlay {
     display: none;
@@ -3745,7 +3734,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     border-bottom: 1px solid rgba(var(--neutral-rgb), 0.04);
     color: var(--text-secondary);
 }
-.cost-table tbody tr:hover td {
+:where(:root:not([data-ui-style="terminal"])) .cost-table tbody tr:hover td {
     background: rgba(var(--neutral-rgb), 0.03);
 }
 
@@ -4080,7 +4069,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     cursor: pointer;
 }
 
-.update-pill:hover {
+:where(:root:not([data-ui-style="terminal"])) .update-pill:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
@@ -4226,8 +4215,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     cursor: pointer;
 }
 
-.skills-status-chip.is-clickable:hover,
-.skills-lock-hint.is-clickable:hover {
+:where(:root:not([data-ui-style="terminal"])) .skills-status-chip.is-clickable:hover,
+:where(:root:not([data-ui-style="terminal"])) .skills-lock-hint.is-clickable:hover {
     filter: brightness(1.12);
 }
 
@@ -4603,7 +4592,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     padding: 0;
 }
 
-.skills-card-menu-trigger:hover {
+:where(:root:not([data-ui-style="terminal"])) .skills-card-menu-trigger:hover {
     border-color: var(--accent-25);
     color: var(--text-primary);
 }
@@ -5161,7 +5150,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     line-height: 1;
 }
 
-.widgets-card-drag:hover {
+:where(:root:not([data-ui-style="terminal"])) .widgets-card-drag:hover {
     border-color: var(--accent-45);
     color: var(--text-primary);
 }
@@ -5948,7 +5937,7 @@ textarea.chat-input {
 .nav-project-item.is-deleting .nav-project-row { grid-template-columns: minmax(0, 1fr); }
 .nav-project-item.is-deleting .nav-activity-marker { display: none; }
 
-.nav-project-row:hover {
+:where(:root:not([data-ui-style="terminal"])) .nav-project-row:hover {
     color: var(--text-primary);
 }
 
@@ -6027,7 +6016,7 @@ textarea.chat-input {
     cursor: pointer;
 }
 
-.nav-projects-add:hover,
+:where(:root:not([data-ui-style="terminal"])) .nav-projects-add:hover,
 .nav-projects-add:focus-visible {
     color: var(--text-primary);
     background: var(--bg-hover);
@@ -6053,12 +6042,12 @@ textarea.chat-input {
     border-radius: var(--radius-sm);
 }
 
-.nav-project-item:hover .nav-project-kebab,
+:where(:root:not([data-ui-style="terminal"])) .nav-project-item:hover .nav-project-kebab,
 .nav-project-item:focus-within .nav-project-kebab {
     opacity: 1;
 }
 
-.nav-project-kebab:hover,
+:where(:root:not([data-ui-style="terminal"])) .nav-project-kebab:hover,
 .nav-project-kebab:focus-visible {
     color: var(--text-primary);
     background: var(--bg-hover);
@@ -6150,7 +6139,7 @@ textarea.chat-input {
     cursor: pointer;
 }
 
-.new-project-dir-row:hover {
+:where(:root:not([data-ui-style="terminal"])) .new-project-dir-row:hover {
     background: var(--menu-item-hover);
 }
 
@@ -6248,7 +6237,7 @@ textarea.chat-input {
     cursor: pointer;
 }
 
-.project-panel-close:hover {
+:where(:root:not([data-ui-style="terminal"])) .project-panel-close:hover {
     color: var(--text-primary);
     border-color: var(--accent);
 }
@@ -6702,7 +6691,7 @@ textarea.chat-input {
     font-family: inherit;
     text-align: left;
 }
-.updates-chip-link:hover {
+:where(:root:not([data-ui-style="terminal"])) .updates-chip-link:hover {
     background: var(--bg-hover);
 }
 .updates-action-row {
@@ -6763,7 +6752,7 @@ textarea.chat-input {
     border-radius: var(--radius-sm);
     min-width: 0;
 }
-.updates-restore-row:hover {
+:where(:root:not([data-ui-style="terminal"])) .updates-restore-row:hover {
     background: var(--bg-hover);
 }
 .updates-restore-label {
@@ -6981,7 +6970,7 @@ textarea.chat-input {
     cursor: pointer;
 }
 
-.chat-file-card:hover:not(:disabled) {
+:where(:root:not([data-ui-style="terminal"])) .chat-file-card:hover:not(:disabled) {
     border-color: var(--focus-accent-border);
     background: var(--bg-hover);
 }
@@ -7153,7 +7142,7 @@ textarea.chat-input {
     text-decoration: none;
 }
 
-.chat-link-button:hover { background: var(--accent-18); }
+:where(:root:not([data-ui-style="terminal"])) .chat-link-button:hover { background: var(--accent-18); }
 
 /* The bubble owns the width floor against the definite transcript column:
    260px card plus its 28px bubble padding and 2px border. A child percentage
@@ -7246,7 +7235,7 @@ textarea.chat-input {
     text-align: left;
     cursor: pointer;
 }
-.chat-quiz-option:hover:not(:disabled) {
+:where(:root:not([data-ui-style="terminal"])) .chat-quiz-option:hover:not(:disabled) {
     border-color: var(--focus-accent-border);
     background: var(--accent-08);
 }
@@ -7298,7 +7287,7 @@ textarea.chat-input {
     font-size: var(--type-meta);
     cursor: pointer;
 }
-.chat-quiz-send:hover:not(:disabled) {
+:where(:root:not([data-ui-style="terminal"])) .chat-quiz-send:hover:not(:disabled) {
     border-color: var(--focus-accent-border);
     background: var(--accent-08);
 }
@@ -7356,9 +7345,9 @@ textarea.chat-input {
     transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.chat-message-copy:hover,
+:where(:root:not([data-ui-style="terminal"])) .chat-message-copy:hover,
 .chat-message-copy:focus-visible { opacity: 1; }
-.chat-message-copy:hover { background: var(--surface-control); }
+:where(:root:not([data-ui-style="terminal"])) .chat-message-copy:hover { background: var(--surface-control); }
 .chat-message-copy:focus-visible {
     outline: 2px solid var(--focus-accent-border);
     outline-offset: 2px;
@@ -7456,13 +7445,13 @@ textarea.chat-input {
     cursor: not-allowed;
 }
 
-.skills-card-menu-dialog:not(.ui-popup) .skills-menu-item:disabled:hover,
-.skills-card-menu-dialog:not(.ui-popup) .skills-menu-item.is-disabled:hover {
+:where(:root:not([data-ui-style="terminal"])) .skills-card-menu-dialog:not(.ui-popup) .skills-menu-item:disabled:hover,
+:where(:root:not([data-ui-style="terminal"])) .skills-card-menu-dialog:not(.ui-popup) .skills-menu-item.is-disabled:hover {
     background: transparent;
     color: var(--text-secondary);
 }
 
-.skills-card-menu-dialog:not(.ui-popup) .skills-menu-item:hover {
+:where(:root:not([data-ui-style="terminal"])) .skills-card-menu-dialog:not(.ui-popup) .skills-menu-item:hover {
     background: var(--menu-item-hover);
     color: var(--text-primary);
 }
@@ -7494,7 +7483,7 @@ textarea.chat-input {
 }
 
 .chat-photo-menu:not(.ui-popup) button:last-child { border-bottom: 0; }
-.chat-photo-menu:not(.ui-popup) button:hover { background: var(--menu-item-hover); }
+:where(:root:not([data-ui-style="terminal"])) .chat-photo-menu:not(.ui-popup) button:hover { background: var(--menu-item-hover); }
 
 
 
@@ -7571,7 +7560,6 @@ textarea.chat-input {
 /* track-migration:end */
 
 /* Light surfaces keep geometry and domain state semantics unchanged. */
-:root[data-theme="light"] #matrix-rain { display: none; }
 :root[data-theme="light"] .chat-page-header { background: var(--bg-primary); }
 :root[data-theme="light"] .chat-bubble.assistant { background: var(--accent-05); }
 :root[data-theme="light"] .chat-bubble.user { background: var(--user-bubble-to); }

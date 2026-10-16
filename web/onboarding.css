@@ -337,7 +337,7 @@ textarea::placeholder {
   line-height: var(--line-meta);
 }
 
-.field-clear:hover {
+:where(:root:not([data-ui-style="terminal"])) .field-clear:hover {
   color: var(--text);
 }
 
@@ -380,7 +380,7 @@ textarea::placeholder {
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
-.selection-pill:hover {
+:where(:root:not([data-ui-style="terminal"])) .selection-pill:hover {
   border-color: rgba(var(--neutral-rgb), 0.24);
   transform: translateY(-1px);
 }
@@ -440,7 +440,7 @@ textarea::placeholder {
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
-.wizard-choice:hover {
+:where(:root:not([data-ui-style="terminal"])) .wizard-choice:hover {
   transform: translateY(-1px);
 }
 

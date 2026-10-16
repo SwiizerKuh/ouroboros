@@ -32,6 +32,22 @@ Desktop persistence requires a launcher built with persistent WebView storage;
 server restart alone cannot verify survival across full quit/relaunch. Mechanism
 and deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
 
+### GPU-safe terminal style
+
+The GPU-safe terminal look is the same `OUROBOROS_GPU_SAFE` switch as the WebKit software-compositing workaround. There is no second appearance setting. The launcher still reads the flag before the desktop window starts; the toggle still restarts the app. When the flag is on, `make_index_page` (`ouroboros/server_web.py`) stops serving `index.html` as a file and stamps `<html data-ui-style="terminal">`, plus an inline `<style id="omarchy-palette">` when an Omarchy `colors.toml` yields a palette (`ouroboros/omarchy_theme.py` `stamp_terminal_document`). When the flag is off, the document is unchanged and this style does not apply.
+
+`web/theme.js` still stores Light / Dark / System in `ouroboros.theme`. While `data-ui-style` is `terminal`, the painted theme is forced to dark (`resolve` returns `dark`) and the Appearance status reads that the terminal style overrides Appearance and the saved choice returns when GPU-safe is off. The radiogroup keeps showing the stored choice.
+
+Colour comes from the Omarchy palette when the server inlines it. `web/ui.css` `:root[data-ui-style="terminal"]` maps shared tokens through `var(--omarchy-*, <Tokyo Night fallback>)`. The fallback accent is `#7aa2f7`, background `#1a1b26`, foreground `#c0caf5`. A missing or unreadable palette still paints that dark block. The type stack on that block is `"JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace` for `--font-sans` and `--diagram-font` — a stack only, no bundled font file. Surfaces are flat: no scanlines, and `web/terminal.css` (linked last) clears backdrop-filter, shadow, mask, and filter on the terminal root.
+
+**No hover paint in this style.** Every `:hover` selector in `style.css`, `ui.css`, `settings.css`, and `onboarding.css` is prefixed with `:where(:root:not([data-ui-style="terminal"]))`, so the default theme keeps today's hover rules at the same specificity. `:focus-visible`, `:focus-within`, `:active`, and `.active` stay unprefixed. Keyboard focus keeps the 2px `--focus-accent-border` outline, not hover paint.
+
+**Motion is terminal-only.** Default mode keeps its glass, hover, and existing durations. In terminal style the kill-switch sets `animation` and `transition` to `none`, then an allowlist restores only open/close at no more than 150ms (opacity or transform), the text caret blink, and a static working mark (`[*]` on spinners and busy badges, `…` in place of bouncing dots). `prefers-reduced-motion: reduce` removes the caret and the 150ms fades as well. Toasts in this style are flat fades, not glass over live content.
+
+**Matrix rain is gone in both modes.** `initMatrixRain` and `#matrix-rain` are not part of `web/app.js`, `web/modules/utils.js`, or the stylesheets. Default mode sits on the static theme background with glass and hover intact.
+
+This block does not move a surface into the migrated set in §8. It recolors through the shared tokens and flattens glass only while `data-ui-style="terminal"`.
+
 ---
 
 ## 1. Type scale

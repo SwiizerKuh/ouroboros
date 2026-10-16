@@ -26,7 +26,7 @@ the GPU-safe toggle under the Theme section (`web/modules/gpu_safe.js`,
 `mountGpuSafe`) persists `OUROBOROS_GPU_SAFE`
 server-side (partial single-key POST of `{OUROBOROS_GPU_SAFE: next}`, no `s-` id) because the launcher must read
 it before the desktop window starts; it restarts the full app with the WebKit
-software-compositing vars.
+software-compositing vars. The same flag, after restart, is what makes `make_index_page` stamp `data-ui-style="terminal"` for the GPU-safe terminal style (`docs/DESIGN.md`).
 
 `theme_palette.js` translates `--chart-*` tokens into mounted Chart options and
 updates in place without replacing data or caller-authored option groups.

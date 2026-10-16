@@ -217,6 +217,115 @@
     --diagram-tertiary: #f5f6f8;
 }
 
+/* GPU-safe terminal palette. Tokyo Night fallback.
+   Omarchy injection (inline <style id="omarchy-palette"> on <html>)
+   supplies --omarchy-*; every token below prefers it with a Tokyo Night
+   fallback so a missing/unreadable colors.toml still paints. Do not mark
+   these !important. Light Omarchy themes yield no palette (omarchy_theme
+   returns None) so this dark block always paints. */
+:root[data-ui-style="terminal"] {
+    --native-color-scheme: var(--omarchy-color-scheme, dark);
+    --neutral-rgb: var(--omarchy-foreground-rgb, 192, 202, 245);
+    --shell-rgb: var(--omarchy-background-rgb, 26, 27, 38);
+    --composer-rgb: var(--omarchy-lighter-background-rgb, 36, 40, 59);
+    --composer-hover-rgb: var(--omarchy-selection-rgb, 41, 46, 66);
+    --modal-rgb: var(--omarchy-dark-background-rgb, 31, 35, 53);
+    --menu-rgb: var(--omarchy-lighter-background-rgb, 36, 40, 59);
+    --media-rgb: var(--omarchy-dark-background-rgb, 22, 22, 30);
+    --wizard-panel-rgb: var(--omarchy-lighter-background-rgb, 36, 40, 59);
+    --wizard-rgb: var(--omarchy-background-rgb, 26, 27, 38);
+    --code-bg: var(--omarchy-dark-background, #16161e);
+    --font-sans: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace;
+    --diagram-font: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace;
+    --bg-primary: var(--omarchy-background, #1a1b26);
+    --bg-secondary: var(--omarchy-lighter-background, #24283b);
+    --bg-card: var(--omarchy-lighter-background, #24283b);
+    --bg-hover: var(--omarchy-selection, #292e42);
+    --text-primary: var(--omarchy-foreground, #c0caf5);
+    --text-secondary: var(--omarchy-light-foreground, #a9b1d6);
+    --text-meta: var(--omarchy-muted, #737aa2);
+    --text-disabled: var(--omarchy-muted, #565f89);
+    --accent: var(--omarchy-accent, #7aa2f7);
+    --accent-light: var(--omarchy-light-foreground, #c0caf5);
+    --accent-dim: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.15);
+    --accent-04: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.04);
+    --accent-05: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.05);
+    --accent-08: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.08);
+    --accent-10: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.10);
+    --accent-12: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.12);
+    --accent-18: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.18);
+    --accent-22: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.22);
+    --accent-25: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.25);
+    --accent-35: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.35);
+    --accent-45: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.45);
+    --accent-55: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.55);
+    --accent-65: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.65);
+    --project: var(--omarchy-magenta, #bb9af7);
+    --project-08: rgba(var(--omarchy-magenta-rgb, 187, 154, 247), 0.08);
+    --project-12: rgba(var(--omarchy-magenta-rgb, 187, 154, 247), 0.12);
+    --project-18: rgba(var(--omarchy-magenta-rgb, 187, 154, 247), 0.18);
+    --user-bubble-from: #1c2836;
+    --user-bubble-to: #1c2836;
+    --user-border: #394b70;
+    --user-glow: transparent;
+    --user-sender: var(--omarchy-cyan, #7dcfff);
+    --user-text: var(--omarchy-foreground, #c0caf5);
+    --system-bubble-bg: #2a2618;
+    --system-border: var(--omarchy-yellow, #e0af68);
+    --system-sender: var(--omarchy-yellow, #e0af68);
+    --system-text: var(--omarchy-foreground, #c0caf5);
+    --assistant-sender: var(--omarchy-red, #f7768e);
+    --assistant-text: var(--omarchy-foreground, #c0caf5);
+    --blue: var(--omarchy-blue, #7aa2f7);
+    --amber: var(--omarchy-yellow, #e0af68);
+    --amber-dim: #2e2918;
+    --green: var(--omarchy-green, #9ece6a);
+    --green-dim: #1e2c22;
+    --red: var(--omarchy-red, #f7768e);
+    --red-dim: #3a2430;
+    --divider: #3b4261;
+    --surface-border: #3b4261;
+    --surface-border-soft: var(--omarchy-selection, #292e42);
+    --surface-card: #1f2335;
+    --surface-card-soft: #1a1e2e;
+    --surface-control: var(--omarchy-selection, #292e42);
+    --menu-item-hover: var(--omarchy-selection, #292e42);
+    --chart-grid: #3b4261;
+    --chart-text: var(--omarchy-light-foreground, #a9b1d6);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='M3 5l4 4 4-4' fill='none' stroke='%23c0caf5' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --diagram-bg: var(--omarchy-background, #1a1b26);
+    --diagram-primary: var(--omarchy-lighter-background, #24283b);
+    --diagram-primary-text: var(--omarchy-foreground, #c0caf5);
+    --diagram-border: var(--omarchy-muted, #565f89);
+    --diagram-line: var(--omarchy-accent, #7aa2f7);
+    --diagram-secondary: var(--omarchy-selection, #292e42);
+    --diagram-tertiary: var(--omarchy-dark-background, #16161e);
+    --ui-modal-bg: #1f2335;
+    --status-ok-fg: var(--omarchy-green, #9ece6a);
+    --status-ok-bg: #1e2c22;
+    --status-ok-border: #365c43;
+    --status-warn-fg: var(--omarchy-yellow, #e0af68);
+    --status-warn-bg: #2e2918;
+    --status-warn-border: #6b5a32;
+    --status-error-fg: var(--omarchy-red, #f7768e);
+    --status-error-bg: #3a2430;
+    --status-error-border: #7a3a4a;
+    --status-info-fg: var(--omarchy-accent, #7aa2f7);
+    --status-neutral-fg: var(--omarchy-light-foreground, #a9b1d6);
+    --status-neutral-bg: var(--omarchy-selection, #292e42);
+    --status-neutral-border: #3b4261;
+    --focus-accent-border: var(--omarchy-accent, #7aa2f7);
+    --focus-accent-ring: rgba(var(--omarchy-accent-rgb, 122, 162, 247), 0.28);
+    --radius-xs: 0;
+    --radius-sm: 0;
+    --radius-md: 2px;
+    --radius: 2px;
+    --radius-lg: 2px;
+    --radius-xl: 2px;
+    --pill-radius: 2px;
+    --nav-item-radius: 2px;
+}
+
 .ouro-ui { font-family: var(--font-sans); color-scheme: var(--native-color-scheme); }
 .muted { color: var(--text-meta); }
 /* Appearance tri-state (Light / Dark / System), rendered by theme.js. It lives in
@@ -245,7 +354,7 @@
     font-size: var(--button-font-size);
     font-weight: 600;
 }
-.theme-choice:hover,
+:where(:root:not([data-ui-style="terminal"])) .theme-choice:hover,
 .theme-choice[aria-checked="true"] {
     color: var(--text-primary);
     border-color: var(--focus-accent-border);
@@ -284,7 +393,7 @@
     outline-offset: 2px;
 }
 
-.btn:hover {
+:where(:root:not([data-ui-style="terminal"])) .btn:hover {
     transform: scale(1.02);
 }
 
@@ -305,7 +414,7 @@
     color: var(--accent-light);
     border-color: var(--accent-18);
 }
-.btn-primary:hover {
+:where(:root:not([data-ui-style="terminal"])) .btn-primary:hover {
     background: var(--accent-25);
     border-color: var(--accent-35);
 }
@@ -317,7 +426,7 @@
     color: var(--text-primary);
     border-color: rgba(var(--neutral-rgb), 0.10);
 }
-.btn-secondary:hover {
+:where(:root:not([data-ui-style="terminal"])) .btn-secondary:hover {
     background: rgba(var(--neutral-rgb), 0.07);
     border-color: var(--accent-25);
 }
@@ -326,7 +435,7 @@
     color: var(--text-primary);
     border-color: rgba(var(--neutral-rgb), 0.08);
 }
-.btn-ghost:hover {
+:where(:root:not([data-ui-style="terminal"])) .btn-ghost:hover {
     background: rgba(var(--neutral-rgb), 0.04);
 }
 .btn-danger {
@@ -334,20 +443,20 @@
     color: var(--status-error-fg);
     border: 1px solid rgba(220, 38, 38, 0.3);
 }
-.btn-danger:hover { background: rgba(220, 38, 38, 0.35); }
+:where(:root:not([data-ui-style="terminal"])) .btn-danger:hover { background: rgba(220, 38, 38, 0.35); }
 
 .btn-save {
     background: var(--green-dim);
     color: var(--status-ok-fg);
     border-color: rgba(34, 197, 94, 0.22);
 }
-.btn-save:hover { background: rgba(34, 197, 94, 0.25); }
+:where(:root:not([data-ui-style="terminal"])) .btn-save:hover { background: rgba(34, 197, 94, 0.25); }
 .btn-default {
     background: var(--bg-card);
     color: var(--text-primary);
     border-color: rgba(var(--neutral-rgb), 0.08);
 }
-.btn-default:hover {
+:where(:root:not([data-ui-style="terminal"])) .btn-default:hover {
     background: var(--bg-hover);
     border-color: rgba(var(--neutral-rgb), 0.14);
 }
@@ -513,7 +622,7 @@ textarea.ui-control { resize: vertical; }
 }
 @media (prefers-reduced-motion: reduce) {
     .btn, .ui-control { transition: none; }
-    .btn:hover, .btn:active { transform: none; }
+    :where(:root:not([data-ui-style="terminal"])) .btn:hover, .btn:active { transform: none; }
 }
 
 /* Measured popup placement is shared; menu/listbox interaction stays separate. */
@@ -552,7 +661,7 @@ textarea.ui-control { resize: vertical; }
     overflow-wrap: anywhere;
 }
 .ui-model-option { cursor: pointer; }
-.ui-model-option:hover { background: var(--menu-item-hover); }
+:where(:root:not([data-ui-style="terminal"])) .ui-model-option:hover { background: var(--menu-item-hover); }
 .ui-model-option[aria-selected="true"] { color: var(--accent-light); background: var(--accent-12); }
 .ui-model-empty { color: var(--text-meta); }
 
@@ -585,7 +694,7 @@ textarea.ui-control { resize: vertical; }
     white-space: normal;
     cursor: pointer;
 }
-.ui-popup [role^="menuitem"]:hover { background: var(--menu-item-hover); }
+:where(:root:not([data-ui-style="terminal"])) .ui-popup [role^="menuitem"]:hover { background: var(--menu-item-hover); }
 .ui-popup [role^="menuitem"]:focus-visible { outline: 2px solid var(--focus-accent-border); outline-offset: -2px; }
 .ui-popup [role^="menuitem"]:disabled,
 .ui-popup [role^="menuitem"][aria-disabled="true"] { color: var(--text-disabled); background: transparent; cursor: default; }

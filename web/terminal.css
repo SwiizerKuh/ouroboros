@@ -1,0 +1,598 @@
+/* GPU-safe terminal layer. To be saved as web/terminal.css, loaded LAST.
+   Link after the page sheets: web/index.html after model_wait.css,
+   web/onboarding_template.html after onboarding.css.
+   Inactive unless <html data-ui-style="terminal">.
+   Default glass, hover, and motion stay untouched by this file.
+   Motion scope: TERMINAL-ONLY (owner Q1 answer 2026-10-16).
+   Font: stack only, no bundled file (owner Q2). No scanlines (owner Q3).
+   Working indicator: static [*] / … (owner Q4).
+   Drafted by cursor=grok-4.7-xhigh (delegated run run-1a82ef2c64f3, $0);
+   nanny verified ui.css split point + matrix anchors; parent spot-checked
+   initMatrixRain (utils.js:561, app.js:5/865), GPU_SAFE default
+   (settings_defaults.py:329), server_web.py:55-77 FileResponse shape. */
+
+/* --- Kill-switch. * does not match pseudo-elements, so name them. --- */
+:root[data-ui-style="terminal"] :where(*, *::before, *::after, *::backdrop) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+    text-shadow: none;
+    mask-image: none;
+    -webkit-mask-image: none;
+    animation: none;
+    transition: none;
+    filter: none;
+}
+
+/* --- Type and page ground. style.css:16 still hard-codes the body stack;
+       this wins until that line uses var(--font-sans). Onboarding body
+       gradient is onboarding.css:35-38. --- */
+:root[data-ui-style="terminal"] body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    background-image: none;
+}
+:root[data-ui-style="terminal"] :where(
+    .ui-control,
+    .ui-control-code,
+    #log-entries,
+    .files-preview-content,
+    button,
+    input,
+    select,
+    textarea
+) {
+    font-family: var(--font-sans);
+}
+
+/* Hard-coded pill and card radii that do not read --radius / --pill-radius. */
+:root[data-ui-style="terminal"] :where(
+    .chat-header-btn,
+    .chat-budget-pill,
+    .chat-load-older-btn,
+    .chat-scroll-bottom-btn,
+    .status-badge,
+    .ui-chip,
+    .chat-live-phase,
+    .chat-live-line-phase,
+    .skills-review-progress,
+    .skills-switch-track,
+    .skills-switch-thumb,
+    .widget-tab-btn,
+    .update-pill,
+    .wizard-badge,
+    .wizard-step,
+    .wizard-step-index,
+    .wizard-shell,
+    .wizard-choice .tone,
+    .selection-pill,
+    .selection-badge,
+    .chat-swarm,
+    .chat-context-mode,
+    .chat-send-inline,
+    .theme-choice,
+    .ui-segment,
+    .marketplace-filter-track,
+    .marketplace-filter-track::after
+) {
+    border-radius: var(--radius);
+}
+
+/* Composer prompt. No DOM change. */
+:root[data-ui-style="terminal"] .chat-text-row::before {
+    content: ">";
+    align-self: center;
+    padding-left: 8px;
+    color: var(--accent);
+    font-weight: 700;
+}
+
+/* Leftover canvas only. Removal in both modes is the initMatrixRain delete
+   (web/modules/utils.js:561, web/app.js:865), not this rule. */
+:root[data-ui-style="terminal"] #matrix-rain {
+    display: none;
+}
+
+/* --- Flat opaque surfaces. One site per glass or gradient wash. --- */
+
+/* style.css:50-58 desktop sidebar wash */
+:root[data-ui-style="terminal"] #primary-sidebar {
+    background: var(--bg-primary);
+}
+
+/* style.css:233-240 unread halo */
+:root[data-ui-style="terminal"] .nav-unread-dot {
+    box-shadow: none;
+}
+
+/* style.css:283-297 task menu */
+:root[data-ui-style="terminal"] .task-control-menu {
+    background: var(--bg-secondary);
+    border: 1px solid var(--surface-border);
+}
+
+/* style.css:377-379 folded answer fade. max-height clip remains. */
+:root[data-ui-style="terminal"] .chat-bubble.project-answer.is-folded > .message {
+    mask-image: none;
+    -webkit-mask-image: none;
+}
+
+/* style.css:404-407 project card drop shadow + translucent wash */
+:root[data-ui-style="terminal"] .chat-live-card.is-project {
+    background: var(--bg-secondary);
+    border-color: var(--project);
+}
+
+/* style.css:707-709 selected file inset ring → 1px outline */
+:root[data-ui-style="terminal"] .files-entry.selected {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+}
+
+/* style.css:740-743 preview wash */
+:root[data-ui-style="terminal"] .files-preview {
+    background: var(--bg-primary);
+}
+
+/* style.css:809-815 image drop shadow */
+:root[data-ui-style="terminal"] .files-preview-image {
+    box-shadow: none;
+}
+
+/* style.css:826-833 drop scrim */
+:root[data-ui-style="terminal"] .files-drop-overlay {
+    background: var(--bg-primary);
+}
+
+/* style.css:842-851 drop card shadow */
+:root[data-ui-style="terminal"] .files-drop-card {
+    background: var(--bg-secondary);
+    box-shadow: none;
+}
+
+/* style.css:856-867 and style.css:1017-1029 are already backdrop-filter:none.
+   The glass is the header pseudo, style.css:1034-1044. */
+:root[data-ui-style="terminal"] .chat-page-header::before {
+    background: var(--bg-primary);
+}
+
+/* style.css:1061-1064 header buttons */
+:root[data-ui-style="terminal"] .chat-header-btn {
+    background: var(--bg-secondary);
+}
+:root[data-ui-style="terminal"] .chat-header-btn.danger {
+    background: var(--status-error-bg);
+    border-color: var(--status-error-border);
+    color: var(--status-error-fg);
+}
+
+/* style.css:1110-1122 header menu */
+:root[data-ui-style="terminal"] .chat-header-menu {
+    background: var(--ui-modal-bg);
+    border: 1px solid var(--surface-border);
+}
+
+/* style.css:1174-1184 budget pill */
+:root[data-ui-style="terminal"] .chat-budget-pill {
+    background: var(--bg-secondary);
+    border-color: var(--status-warn-border);
+}
+
+/* style.css:1225-1231 status badge */
+:root[data-ui-style="terminal"] .status-badge {
+    background: var(--bg-secondary);
+}
+
+/* style.css:1320-1324 onboarding overlay scrim; style.css:1336-1346 card */
+:root[data-ui-style="terminal"] .onboarding-overlay-backdrop {
+    background: var(--bg-primary);
+}
+:root[data-ui-style="terminal"] .onboarding-restart-card {
+    background: var(--bg-secondary);
+}
+
+/* style.css:1418-1434 scroll-to-bottom. Keep the -50% centering transform. */
+:root[data-ui-style="terminal"] .chat-scroll-bottom-btn {
+    background: var(--bg-secondary);
+    transform: translate(-50%, 0);
+}
+/* style.css:1457-1465 activity dot ring */
+:root[data-ui-style="terminal"] .chat-scroll-activity-dot {
+    box-shadow: none;
+}
+
+/* style.css:1478-1489 bubbles. */
+:root[data-ui-style="terminal"] .chat-bubble.user,
+:root[data-ui-style="terminal"] .chat-bubble.assistant {
+    background: var(--bg-secondary);
+    box-shadow: none;
+}
+:root[data-ui-style="terminal"] .chat-bubble.user {
+    background: var(--user-bubble-from);
+    border-color: var(--user-border);
+}
+:root[data-ui-style="terminal"] .chat-bubble.assistant {
+    border-color: var(--status-error-border);
+}
+/* style.css:1732-1733 progress rail literal */
+:root[data-ui-style="terminal"] .chat-bubble.progress {
+    border-left-color: var(--surface-border);
+}
+
+/* style.css:1751-1769 live card */
+:root[data-ui-style="terminal"] .chat-live-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--surface-border);
+}
+/* style.css:2338-2343 nested card inset shadow */
+:root[data-ui-style="terminal"] .chat-live-card.subagent {
+    background: var(--code-bg);
+    box-shadow: none;
+}
+
+/* style.css:2891-2904 mobile nav button; style.css:2907-2914 drawer scrim */
+:root[data-ui-style="terminal"] .mobile-nav-toggle {
+    background: var(--bg-secondary);
+}
+:root[data-ui-style="terminal"] .nav-drawer-backdrop {
+    background: var(--code-bg);
+}
+
+/* style.css:3014-3034 composer fade */
+:root[data-ui-style="terminal"] :is(#chat-input-area, .chat-input-area) {
+    background: var(--bg-primary);
+}
+
+/* style.css:3055-3078 composer row. Focus ring restored below, not as shadow. */
+:root[data-ui-style="terminal"] .chat-text-row,
+:root[data-ui-style="terminal"] .chat-text-row:focus-within {
+    background: var(--bg-secondary);
+    box-shadow: none;
+}
+/* style.css:3083-3088 chat-freed is a 900ms animation. animationend at
+   web/modules/chat.js:1137 never fires when animation is none, so the class
+   sticks. Give it no paint. JS should drop the class immediately in this mode. */
+:root[data-ui-style="terminal"] .chat-text-row.chat-freed {
+    animation: none;
+    border-color: var(--surface-border);
+}
+
+/* style.css:3102-3105 drag ring. Specificity beats the kill-switch. */
+:root[data-ui-style="terminal"] :is(#chat-input-area, .chat-input-area).drag-active .chat-input-wrap {
+    box-shadow: none;
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* style.css:3154-3162 attach chip */
+:root[data-ui-style="terminal"] .attach-badge {
+    background: var(--code-bg);
+}
+
+/* style.css:3224-3265 and 3318-3332 composer controls */
+:root[data-ui-style="terminal"] :is(.chat-swarm, .chat-context-mode) {
+    background: var(--code-bg);
+    box-shadow: none;
+}
+:root[data-ui-style="terminal"] .chat-swarm[data-armed="true"] {
+    background: var(--accent-dim);
+    box-shadow: none;
+    border-color: var(--accent);
+}
+:root[data-ui-style="terminal"] .chat-send-inline {
+    background: var(--accent-dim);
+    box-shadow: none;
+}
+
+/* style.css:3364-3382 modal. Scrim has no blur; make it a solid plate. */
+:root[data-ui-style="terminal"] :is(.ui-modal-backdrop, .marketplace-modal-backdrop) {
+    background: var(--code-bg);
+}
+:root[data-ui-style="terminal"] :is(.ui-modal, .marketplace-modal) {
+    background: var(--ui-modal-bg);
+    box-shadow: none;
+}
+
+/* style.css:3385-3392 stat cards */
+:root[data-ui-style="terminal"] .stat-card {
+    background: var(--bg-secondary);
+    border-color: var(--surface-border);
+}
+
+/* style.css:3785-3793 evolution cards */
+:root[data-ui-style="terminal"] :is(.evo-runtime-card, .evo-chart-wrap) {
+    background: var(--bg-secondary);
+}
+
+/* style.css:3904-3905 costs card blur on top of the shared card fill */
+:root[data-ui-style="terminal"] .costs-budget-card {
+    background: var(--surface-card);
+}
+
+/* style.css:4287-4295 switch thumb shadow */
+:root[data-ui-style="terminal"] .skills-switch-thumb {
+    box-shadow: none;
+    background: var(--text-primary);
+}
+
+/* style.css:4670-4679 toast */
+:root[data-ui-style="terminal"] .toast {
+    background: var(--ui-modal-bg);
+    border: 1px solid var(--surface-border);
+}
+
+/* style.css:4761-4766 marketplace working wash */
+:root[data-ui-style="terminal"] .marketplace-card.is-working {
+    background: var(--status-warn-bg);
+    border-color: var(--status-warn-border);
+}
+
+/* style.css:5107-5114 widget card blur. Do not set transform. */
+:root[data-ui-style="terminal"] .widgets-card {
+    background: var(--surface-card);
+}
+/* style.css:5121-5123 drag-over ring */
+:root[data-ui-style="terminal"] .widgets-card.drag-over {
+    box-shadow: none;
+    outline: 1px solid var(--accent);
+    outline-offset: 0;
+}
+/* style.css:5148-5157 drag handle */
+:root[data-ui-style="terminal"] .widgets-card-drag {
+    background: var(--bg-secondary);
+}
+
+/* style.css:6183-6198 project panel */
+:root[data-ui-style="terminal"] .project-panel {
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--surface-border);
+}
+/* style.css:6263-6273 panel scrim */
+:root[data-ui-style="terminal"] .project-panel-backdrop {
+    background: var(--code-bg);
+}
+
+/* style.css:6633-6634 updates card */
+:root[data-ui-style="terminal"] .updates-card {
+    background: var(--surface-card);
+}
+
+/* style.css:7028-7035 file dialog; ui.css:536-544 model list; ui.css:560-570 menu */
+:root[data-ui-style="terminal"] :is(
+    .chat-file-dialog,
+    .ui-model-options,
+    .ui-popup[role="menu"],
+    .skills-card-menu-dialog,
+    .chat-photo-menu
+) {
+    background: var(--ui-modal-bg);
+    box-shadow: none;
+    border: 1px solid var(--surface-border);
+}
+
+/* onboarding.css:1-12 local vars, :69-82 shell, :142-145 active step */
+:root[data-ui-style="terminal"] {
+    --bg: var(--bg-primary);
+    --panel: var(--bg-secondary);
+    --panel-2: var(--bg-secondary);
+    --panel-3: var(--code-bg);
+    --border: var(--surface-border);
+    --border-strong: var(--accent);
+    --shadow: none;
+    --ghost: var(--text-disabled);
+    --text: var(--text-primary);
+    --muted: var(--text-meta);
+}
+:root[data-ui-style="terminal"] .wizard-shell {
+    background: var(--bg-secondary);
+    border: 1px solid var(--surface-border);
+}
+:root[data-ui-style="terminal"] .wizard-step.active {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+    box-shadow: none;
+}
+
+/* settings.css:11-14 tabs are already backdrop-filter:none.
+   settings.css:66-68 danger section literals. */
+:root[data-ui-style="terminal"] .settings-shell .form-section.danger {
+    background: var(--status-error-bg);
+    border-color: var(--status-error-border);
+}
+
+/* ui.css:332-337 danger button literals */
+:root[data-ui-style="terminal"] .btn-danger {
+    background: var(--status-error-bg);
+    border-color: var(--status-error-border);
+    color: var(--status-error-fg);
+}
+/* --- Focus. Existing :focus-visible outlines stay. --- */
+:root[data-ui-style="terminal"] :is(
+    .ui-control:focus-visible,
+    input:not(.ui-control):not(.ui-checkbox):focus-visible,
+    select:not(.ui-control):not(.ui-checkbox):focus-visible,
+    textarea:not(.ui-control):not(.ui-checkbox):focus-visible,
+    .marketplace-search:not(.ui-control):focus-visible
+) {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+    box-shadow: none;
+}
+/* style.css:3074-3078. The row is not :focus-visible; the field inside is. */
+:root[data-ui-style="terminal"] .chat-text-row:focus-within {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
+
+/* --- Open/close allowlist. Max 150ms. Terminal-only per owner Q1. --- */
+@keyframes terminal-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes terminal-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+/* style.css:6199-6202 was transform+opacity 180ms. */
+:root[data-ui-style="terminal"] .project-panel,
+:root[data-ui-style="terminal"] .project-panel.open {
+    transform: none;
+    transition: opacity 150ms linear;
+}
+/* style.css:6274-6276 was opacity 180ms */
+:root[data-ui-style="terminal"] .project-panel-backdrop {
+    transition: opacity 150ms linear;
+}
+
+@media (max-width: 640px) {
+    :root[data-ui-style="terminal"] #primary-sidebar {
+        transform: none;
+        transition: opacity 150ms linear;
+        background: var(--bg-primary);
+        box-shadow: none;
+    }
+    :root[data-ui-style="terminal"] #primary-sidebar:not(.open) {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+    }
+    :root[data-ui-style="terminal"] #primary-sidebar.open {
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto;
+    }
+}
+
+/* style.css:1436-1439 was opacity+transform 180ms, plus colour. */
+:root[data-ui-style="terminal"] .chat-scroll-bottom-btn,
+:root[data-ui-style="terminal"] .chat-scroll-bottom-btn.visible,
+:root[data-ui-style="terminal"] .chat-scroll-bottom-btn:hover {
+    transform: translate(-50%, 0);
+    transition: opacity 150ms linear;
+}
+
+/* style.css:4687-4709 toast slide, 160ms. Opacity only. */
+:root[data-ui-style="terminal"] .toast {
+    animation: terminal-fade-in 150ms linear;
+}
+:root[data-ui-style="terminal"] .toast.is-hiding {
+    animation: terminal-fade-out 150ms linear forwards;
+}
+
+/* Disclosure chevrons are open/close. style.css:1993-1995 is 180ms;
+   style.css:4471-4475 is already 120ms. */
+:root[data-ui-style="terminal"] .chat-live-chevron,
+:root[data-ui-style="terminal"] .skills-details > summary::before,
+:root[data-ui-style="terminal"] .activity-history > summary::before {
+    transition: transform 120ms linear;
+}
+
+/* --- Caret. The only animation allowed past 150ms. --- */
+@keyframes terminal-caret {
+    0%, 100% { caret-color: var(--accent); }
+    50% { caret-color: transparent; }
+}
+:root[data-ui-style="terminal"] :is(
+    textarea,
+    input:not([type]),
+    input[type="text"],
+    input[type="search"],
+    input[type="password"],
+    input[type="email"],
+    input[type="url"],
+    input[type="number"],
+    [contenteditable="true"]
+) {
+    caret-color: var(--accent);
+    animation: terminal-caret 1.06s steps(1, end) infinite;
+}
+
+/* --- Static spinners. [*] is a working mark. … replaces bouncing dots.
+       Owner Q4: static glyph accepted. --- */
+:root[data-ui-style="terminal"] #reconnect-overlay .spinner {
+    width: auto;
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+}
+:root[data-ui-style="terminal"] #reconnect-overlay .spinner::before {
+    content: "[*]";
+}
+:root[data-ui-style="terminal"] :is(.skills-review-spinner, .marketplace-working-spinner) {
+    width: auto;
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+}
+:root[data-ui-style="terminal"] :is(.skills-review-spinner, .marketplace-working-spinner)::before {
+    content: "[*]";
+}
+:root[data-ui-style="terminal"] #skills-refresh.is-loading::after {
+    content: " [*]";
+    width: auto;
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+}
+:root[data-ui-style="terminal"] :is(.typing-dots, .chat-live-typing, .nav-activity-marker) span {
+    display: none;
+}
+:root[data-ui-style="terminal"] :is(.typing-dots, .chat-live-typing)::before,
+:root[data-ui-style="terminal"] .nav-activity-marker[data-state="working"]::before {
+    content: "…";
+    color: var(--text-secondary);
+}
+:root[data-ui-style="terminal"] .status-badge.thinking::after,
+:root[data-ui-style="terminal"] .chat-load-older[aria-busy="true"] .chat-load-older-btn::after,
+:root[data-ui-style="terminal"] .widget-status[data-state="refreshing"]::after {
+    content: " [*]";
+    position: static;
+    display: inline;
+    width: auto;
+    height: auto;
+    background: none;
+    animation: none;
+}
+
+/* prefers-reduced-motion wins over everything, caret included. The generic
+   :where() reset alone cannot do that: it carries no specificity, so every
+   allowlist rule below repeats here with identical specificity and wins back
+   on source order. */
+@media (prefers-reduced-motion: reduce) {
+    :root[data-ui-style="terminal"] :where(*, *::before, *::after) {
+        animation: none;
+        transition: none;
+    }
+    :root[data-ui-style="terminal"] .project-panel,
+    :root[data-ui-style="terminal"] .project-panel.open,
+    :root[data-ui-style="terminal"] .project-panel-backdrop,
+    :root[data-ui-style="terminal"] #primary-sidebar,
+    :root[data-ui-style="terminal"] #primary-sidebar:not(.open),
+    :root[data-ui-style="terminal"] #primary-sidebar.open,
+    :root[data-ui-style="terminal"] .chat-scroll-bottom-btn,
+    :root[data-ui-style="terminal"] .chat-scroll-bottom-btn.visible,
+    :root[data-ui-style="terminal"] .chat-scroll-bottom-btn:hover,
+    :root[data-ui-style="terminal"] .toast,
+    :root[data-ui-style="terminal"] .toast.is-hiding,
+    :root[data-ui-style="terminal"] .chat-live-chevron,
+    :root[data-ui-style="terminal"] .skills-details > summary::before,
+    :root[data-ui-style="terminal"] .activity-history > summary::before,
+    :root[data-ui-style="terminal"] :is(
+        textarea,
+        input:not([type]),
+        input[type="text"],
+        input[type="search"],
+        input[type="password"],
+        input[type="email"],
+        input[type="url"],
+        input[type="number"],
+        [contenteditable="true"]
+    ) {
+        animation: none;
+        transition: none;
+    }
+}

@@ -13,6 +13,8 @@
     const CHOICES = ['light', 'dark', 'system'];
     const LABELS = { light: 'Light', dark: 'Dark', system: 'System' };
     const root = document.documentElement;
+    const style = root.dataset.uiStyle === 'terminal' ? 'terminal' : 'default';
+    const locked = style === 'terminal';
     const isChoice = (value) => CHOICES.includes(value);
 
     let choice = 'system';
@@ -26,10 +28,15 @@
         ? window.matchMedia('(prefers-color-scheme: light)')
         : null;
     // Dark is the fallback when the client reports no OS preference.
-    const resolve = (value) => (value === 'system' ? (query?.matches ? 'light' : 'dark') : value);
+    // Terminal style forces dark and ignores OS/storage for painting.
+    const resolve = (value) => {
+        if (locked) return 'dark';
+        return value === 'system' ? (query?.matches ? 'light' : 'dark') : value;
+    };
     let resolved = resolve(choice);
 
     const statusText = () => {
+        if (locked) return 'GPU-safe terminal style overrides Appearance. Your choice returns when GPU-safe is off.';
         if (!storageAvailable) return 'Appearance applies until this window reloads; this device blocks storage.';
         if (choice === 'system' && !query) return 'This client reports no OS appearance, so System uses Dark.';
         return '';
@@ -133,7 +140,7 @@
         settle();
     };
 
-    const onSystemChange = () => { if (choice === 'system') settle(); };
+    const onSystemChange = () => { if (!locked && choice === 'system') settle(); };
 
     const ready = () => syncControls();
     const cleanup = (event) => {
@@ -150,7 +157,7 @@
     document.addEventListener('DOMContentLoaded', ready, { once: true });
     window.addEventListener('storage', onStorage);
     window.addEventListener('pagehide', cleanup);
-    query?.addEventListener?.('change', onSystemChange);
+    if (!locked) query?.addEventListener?.('change', onSystemChange);
 
     /* Views rendered after boot (the Settings page is injected by app.js) call
        mount() once their markup is in the document; the delegated handlers above
@@ -158,6 +165,7 @@
     window.ouroTheme = {
         get choice() { return choice; },
         get theme() { return resolved; },
+        get style() { return style; },
         set: choose,
         mount: syncControls,
     };

@@ -10,7 +10,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 
 | Method | Path | Handler |
 |---|---|---|
-| GET | `/` | `server.index_page` |
+| GET | `/` | `server.index_page` (`ouroboros/server_web.py::make_index_page`: plain `FileResponse` and stamped `HTMLResponse` both send `Cache-Control: no-store`, so the GPU-safe terminal flag + inline palette are re-read every load) |
 | GET | `/api/health` | `gateway.state.api_health` |
 | GET | `/api/state` | `gateway.state.api_state` |
 | GET | `/api/extensions` | `gateway.extensions.api_extensions_index` (unique rows additionally carry `content_hash`, `published` (validated receipt object or null), `published_malformed`; identity-collision rows carry `identity_collision: true` and omit the receipt fields; a hub row's display hints `official_hub_verified`/`owner_attestable` are matched against the fresh display-plane catalog memo and are `null` without one — this GET never fetches the catalog) |

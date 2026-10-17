@@ -61,13 +61,19 @@ class NoCacheStaticFiles:
 
 
 def make_index_page(web_dir: pathlib.Path, load_settings=None):
+    # Both HTML documents vary per request (Telegram hint, GPU-safe terminal
+    # stamp + inline Omarchy palette), so they must never be heuristically
+    # cached: a stale shell without data-ui-style="terminal" survives restarts.
+    # Matches /onboarding (no-store) and beats /static/* (no-cache) on purpose.
+    _NO_STORE = {"Cache-Control": "no-store"}
+
     async def index_page(_request) -> FileResponse | HTMLResponse:
         index = web_dir / "index.html"
         if index.exists():
             telegram = _request.headers.get("X-Ouroboros-Telegram-MiniApp") == "1"
             terminal = _terminal_style_on(load_settings)
             if not (telegram or terminal):
-                return FileResponse(str(index), media_type="text/html")
+                return FileResponse(str(index), media_type="text/html", headers=_NO_STORE)
             html = index.read_text(encoding="utf-8")
             if telegram:
                 # The authenticated sidecar proxy already stamps this presentation
@@ -78,7 +84,7 @@ def make_index_page(web_dir: pathlib.Path, load_settings=None):
                 from ouroboros.omarchy_theme import stamp_terminal_document
 
                 html = stamp_terminal_document(html)
-            return HTMLResponse(html)
+            return HTMLResponse(html, headers=_NO_STORE)
         return HTMLResponse("<html><body><h1>Ouroboros — web/ not found</h1></body></html>", status_code=404)
 
     return index_page

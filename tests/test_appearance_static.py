@@ -316,6 +316,8 @@ def test_terminal_css_motion_stays_within_150ms_except_the_stepped_caret():
             millis = float(amount) * (1000 if unit == "s" else 1)
             assert millis <= 150, f"{prop}: {value.strip()} exceeds 150ms"
     assert len(caret) == 1, "exactly one declaration may run past 150ms: the caret"
+    assert ":focus" in css.split("terminal-caret 1.06s")[0].split("@keyframes terminal-caret")[-1], \
+        "the caret blink must be scoped to :focus so an idle unfocused page runs zero infinite animations"
     assert "@media (prefers-reduced-motion: reduce)" in css
     reduced = css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
     assert "animation: none" in reduced and "transition: none" in reduced
@@ -323,12 +325,34 @@ def test_terminal_css_motion_stays_within_150ms_except_the_stepped_caret():
     # the class allowlist rules would keep winning without explicit repeats.
     # Assert the winning rules themselves reappear inside the media block.
     assert "textarea" in reduced, "the caret selector must repeat inside reduced-motion"
+    assert "textarea:focus" in reduced, "the focused caret blink must also stop under reduced-motion"
     caret_rule = reduced.split("textarea", 1)[1].split("}", 1)[0]
     assert "animation: none" in caret_rule, "the repeated caret rule must clear the blink"
     for selector in (".project-panel", ".toast", ".chat-live-chevron"):
         assert selector in reduced, f"{selector} allowlist must repeat inside reduced-motion"
     tail = reduced.split(".chat-live-chevron", 1)[1].split("}", 1)[0]
     assert "transition: none" in tail
+
+
+def test_terminal_idle_runs_no_infinite_working_animation():
+    css = _strip_css_comments(_read("web/terminal.css"))
+    # The three style.css thinking-pulse sites must be stopped in terminal mode.
+    for selector in (
+        ".status-badge.thinking",
+        '.chat-load-older[aria-busy="true"] .chat-load-older-btn',
+        ".chat-live-card:not(",
+    ):
+        assert selector in css, f"terminal.css must override {selector}"
+    # Unfocused fields keep a static caret: the base rule sets animation none.
+    base = css.split("@keyframes terminal-caret", 1)[1]
+    assert "animation: none" in base.split("textarea:focus", 1)[0]
+
+
+def test_root_document_is_never_heuristically_cached():
+    web = _read("ouroboros/server_web.py")
+    page = web.split("def make_index_page", 1)[1].split("def _terminal_style_on", 1)[0]
+    assert page.count('"Cache-Control": "no-store"') >= 1
+    assert "FileResponse(str(index)" in page and "HTMLResponse(html" in page
 
 
 def test_terminal_spinners_are_static_glyphs():

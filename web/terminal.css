@@ -488,7 +488,11 @@
     transition: transform 120ms linear;
 }
 
-/* --- Caret. The only animation allowed past 150ms. --- */
+/* --- Caret. The only animation allowed past 150ms. Scoped to :focus so an
+       idle unfocused page runs zero infinite animations: under software
+       compositing (WEBKIT_DISABLE_COMPOSITING_MODE=1) every running animation
+       is main-thread repaints at display rate. Unfocused fields keep a static
+       accent caret-color with no animation. --- */
 @keyframes terminal-caret {
     0%, 100% { caret-color: var(--accent); }
     50% { caret-color: transparent; }
@@ -505,7 +509,32 @@
     [contenteditable="true"]
 ) {
     caret-color: var(--accent);
+    animation: none;
+}
+:root[data-ui-style="terminal"] :is(
+    textarea:focus,
+    input:not([type]):focus,
+    input[type="text"]:focus,
+    input[type="search"]:focus,
+    input[type="password"]:focus,
+    input[type="email"]:focus,
+    input[type="url"]:focus,
+    input[type="number"]:focus,
+    [contenteditable="true"]:focus
+) {
+    caret-color: var(--accent);
     animation: terminal-caret 1.06s steps(1, end) infinite;
+}
+
+/* --- Idle-CPU guard: infinite working pulses that the :where() kill-switch
+       cannot beat on specificity. style.css runs thinking-pulse (1.5s
+       ease-in-out infinite) on these three selectors; in terminal mode the
+       static [*] glyph above is the working mark, so stop the animation.
+       WEBKIT_* i915 protections are untouched. --- */
+:root[data-ui-style="terminal"] .status-badge.thinking,
+:root[data-ui-style="terminal"] .chat-load-older[aria-busy="true"] .chat-load-older-btn,
+:root[data-ui-style="terminal"] .chat-live-card:not([data-finished="1"]) .chat-live-phase:is(.working, .thinking, .progress, .calling, .context) {
+    animation: none;
 }
 
 /* --- Static spinners. [*] is a working mark. … replaces bouncing dots.
@@ -590,7 +619,16 @@
         input[type="email"],
         input[type="url"],
         input[type="number"],
-        [contenteditable="true"]
+        [contenteditable="true"],
+        textarea:focus,
+        input:not([type]):focus,
+        input[type="text"]:focus,
+        input[type="search"]:focus,
+        input[type="password"]:focus,
+        input[type="email"]:focus,
+        input[type="url"]:focus,
+        input[type="number"]:focus,
+        [contenteditable="true"]:focus
     ) {
         animation: none;
         transition: none;

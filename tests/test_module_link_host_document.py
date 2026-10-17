@@ -13,8 +13,10 @@ def test_telegram_marker_only_changes_the_host_document():
     with TestClient(Starlette(routes=[Route("/", make_index_page(web))])) as client:
         plain = client.get("/")
         assert plain.content == (web / "index.html").read_bytes()
+        assert plain.headers.get("cache-control") == "no-store"
         marked = client.get("/", headers={"X-Ouroboros-Telegram-MiniApp": "1"})
         assert marked.status_code == 200
+        assert marked.headers.get("cache-control") == "no-store"
         assert '<html data-ouroboros-host="telegram"' in marked.text
         assert '<script async src="https://telegram.org/js/telegram-web-app.js"></script>' in marked.text
         assert 'data-ouroboros-host' not in plain.text

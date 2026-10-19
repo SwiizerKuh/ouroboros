@@ -79,7 +79,10 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
 @dataclass
 class Worker:
     wid: int
-    proc: mp.Process
+    # A ``multiprocessing.Process``, or — while an assisted update has pinned its
+    # runtime — the narrow adapter over a plain subprocess that answers the same
+    # pid/is_alive/exitcode/join/terminate surface (update_runtime_worker.py).
+    proc: Any
     in_q: Any
     busy_task_id: Optional[str] = None
     # Variant A (off-loop reaping): set under _queue_lock when a timed-out task's heavy
@@ -151,6 +154,21 @@ def get_event_q():
             except Exception:
                 log.debug("Failed to record event queue generation", exc_info=True)
     return _EVENT_Q
+
+
+def worker_queue_manager():
+    """The process-lifetime queue manager, for channels a plain subprocess can hold.
+
+    An assisted update's pinned worker is not a ``multiprocessing`` child, so it
+    cannot inherit a ``Queue``'s pipe; its input queue has to be a proxy from a
+    manager, and the one manager this server already runs — and already reaps
+    through custody — is the event bus's. Reusing it keeps a single manager
+    process and a single generation identity per server."""
+    get_event_q()
+    with _EVENT_Q_LOCK:
+        if _EVENT_Q_MANAGER is None:
+            raise RuntimeError("supervisor event queue manager is unavailable")
+        return _EVENT_Q_MANAGER
 
 
 def shutdown_event_q() -> None:
@@ -1115,30 +1133,36 @@ def spawn_workers(n: int = 0) -> None:
     # is not used by worker code and serializes competing full-pool starts/kills.
     reap_orphaned_workers()
     _CTX = mp.get_context(_WORKER_START_METHOD)
-    event_q = get_event_q()
+    get_event_q()  # the bus exists before any child can publish onto it
     events_cursor, spawned_at = events_log_cursor(), time.time()
 
     count = n or MAX_WORKERS
+    # Lazy on purpose: update_runtime is the update domain, and this supervisor
+    # module already reaches it only through the spawn factory below. A
+    # module-level import would be a new strict D08→D10 direction.
+    from supervisor.update_runtime import active_runtime_pin
+
+    runtime_pin = active_runtime_pin()
     append_jsonl(
         DRIVE_ROOT / "logs" / "supervisor.jsonl",
         {
             "ts": utc_now_iso(),
             "type": "worker_spawn_start",
-            "start_method": _WORKER_START_METHOD,
+            "start_method": "pinned_runtime" if runtime_pin else _WORKER_START_METHOD,
             "count": count,
             "event_queue_generation": event_queue_generation(),
             "event_queue_transport": "manager",
+            **({"runtime_pin_sha": str(runtime_pin.get("sha") or "")} if runtime_pin else {}),
         },
     )
     new_workers: Dict[int, Worker] = {}
     try:
         for i in range(count):
-            in_q = _CTX.Queue()
-            proc = _CTX.Process(target=worker_main,
-                               args=(i, in_q, event_q, str(REPO_DIR), str(DRIVE_ROOT),
-                                     _current_custody_session_id()))
-            proc.daemon = True
-            proc.start()
+            # Ordinary multiprocessing, or an assisted update's pinned runtime when
+            # one is explicitly selected. Initial start, replacement and recovery
+            # all come through start_worker_slot_process, so they cannot disagree
+            # about the code a worker imports.
+            proc, in_q = start_worker_slot_process(i)
             # Unassignable until the readiness seam observes this child's worker_ready row.
             new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True)
     except Exception:
@@ -2175,6 +2199,7 @@ from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public
 from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentional public re-exports
     _WORKER_LIFECYCLE_LOCK,
     _worker_pool_execution_state,
+    close_worker_queue,
     disable_exhausted_worker_pool,
     _first_worker_event_since,
     _kill_survivors,
@@ -2188,6 +2213,7 @@ from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentiona
     kill_workers_for_update,
     reap_orphaned_workers,
     respawn_worker,
+    start_worker_slot_process,
 )
 from supervisor.worker_process import (  # noqa: E402, F401 -- intentional public re-exports
     WORKER_LOG_SINK_SUPPRESSED_TYPES,

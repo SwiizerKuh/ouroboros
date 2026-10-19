@@ -350,6 +350,9 @@ def test_update_recovery_uses_preloaded_policy_after_real_git_conflict(package_r
         workers.RUNNING = {{'probe': {{}}}}
         workers.PENDING = []
         workers.ensure_worker_pool_started = lambda **_: True
+        # This fixture tests resident policy imports, not snapshot publication:
+        # its Git history deliberately tracks only the conflicting policy file.
+        update_merge.ensure_assisted_runtime_selected = lambda _tx: (True, '')
         result = {{'resident': resident}}
         try:
             result['task'] = update_merge.enqueue_assisted_resolution_task({{

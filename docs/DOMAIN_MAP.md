@@ -15,9 +15,9 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D05 | Tool surfaces: files, code, shell, media, external | 29 | 0 |
 | D06 | Review stack | 68 | 0 |
 | D07 | Delegation, subagents & Claudexor | 54 | 0 |
-| D08 | Supervisor: queue, workers, events & runtime control | 48 | 0 |
+| D08 | Supervisor: queue, workers, events & runtime control | 50 | 0 |
 | D09 | Cancellation, owner control & process custody | 13 | 0 |
-| D10 | Git, update & release machinery | 28 | 0 |
+| D10 | Git, update & release machinery | 29 | 0 |
 | D11 | Gateway, server & Web UI | 57 | 0 |
 | D12 | Settings & configuration | 15 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 16 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 10 | 0 |
-| **total** | | **578** | **0** |
+| **total** | | **581** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -504,6 +504,8 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/task_dispatch.py`
 - `supervisor/task_model_wait.py`
 - `supervisor/telemetry_events.py`
+- `supervisor/update_runtime_boot.py`
+- `supervisor/update_runtime_worker.py`
 - `supervisor/worker_assignment.py`
 - `supervisor/worker_chat_lane.py`
 - `supervisor/worker_health.py`
@@ -558,6 +560,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/update_merge_plan.py`
 - `supervisor/update_merge_policy.py`
 - `supervisor/update_recovery.py`
+- `supervisor/update_runtime.py`
 - `supervisor/update_source.py`
 
 ### D11 — Gateway, server & Web UI

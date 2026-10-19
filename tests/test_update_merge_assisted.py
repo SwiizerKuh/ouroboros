@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import supervisor.git_ops as git_ops
 import supervisor.update_merge as update_merge
+from tests._shared import stub_assisted_runtime_pin
 
 
 def _git(repo, *args):
@@ -690,7 +691,7 @@ def test_boot_resume_does_not_enqueue_a_duplicate_assisted_resolver(monkeypatch)
     import supervisor.queue as queue
     import supervisor.workers as workers
 
-    monkeypatch.setattr(workers, "ensure_worker_pool_started", lambda **_kwargs: True)
+    _stub_worker_gates(monkeypatch)
     pending = [{"id": "resolver-task", "type": "task", "legacy_field": "preserved"}]
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", {})
@@ -717,6 +718,7 @@ def test_boot_resume_does_not_enqueue_a_duplicate_assisted_resolver(monkeypatch)
 def test_assisted_resolver_readiness_waits_for_clean_tree_boot(tmp_path, monkeypatch):
     import supervisor.workers as workers
 
+    stub_assisted_runtime_pin(monkeypatch, "base-sha")
     proc = SimpleNamespace(pid=1234, is_alive=lambda: True)
     monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
     monkeypatch.setattr(workers, "WORKERS", {})
@@ -738,6 +740,7 @@ def test_assisted_resolver_readiness_waits_for_clean_tree_boot(tmp_path, monkeyp
 def test_assisted_resolver_readiness_rejects_wrong_sha(tmp_path, monkeypatch):
     import supervisor.workers as workers
 
+    stub_assisted_runtime_pin(monkeypatch, "base-sha")
     proc = SimpleNamespace(pid=1234, is_alive=lambda: True)
     monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
     monkeypatch.setattr(workers, "WORKERS", {})
@@ -1106,13 +1109,15 @@ def test_dirty_local_work_is_in_the_reviewed_diff(tmp_path, monkeypatch):
     assert "b.txt" in staged  # the official change is in the same reviewed diff
 
 
-def _stub_worker_gates(monkeypatch):
-    """Neutral worker-pool/admission stubs for rollback paths (parallel-safe)."""
+def _stub_worker_gates(monkeypatch, pin_sha: str = "pinned-base-sha"):
+    """Neutral worker-pool/admission stubs for rollback paths (parallel-safe); the pinned
+    assisted runtime is part of that neutrality — recovery and enqueue REFUSE without one."""
     import supervisor.workers as workers
 
     monkeypatch.setattr(workers, "ensure_worker_pool_started", lambda **_kwargs: True)
     monkeypatch.setattr(workers, "close_repo_writer_admission", lambda reason: None)
     monkeypatch.setattr(workers, "open_repo_writer_admission", lambda expected_reason="": None)
+    stub_assisted_runtime_pin(monkeypatch, pin_sha)
 
 
 def _supervisor_events(tmp_path, event_type):

@@ -104,14 +104,34 @@ def _adopt_published_extensions(pool_drive_root: str) -> None:
 
 
 def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
-                custody_session_id: str = "") -> None:
+                custody_session_id: str = "", runtime_root: str = "") -> None:
+    """Serve tasks for one worker slot until told to stop.
+
+    ``runtime_root`` is set only for an assisted update's pinned worker (see
+    supervisor/update_runtime.py): the directory this process already imported its
+    code from, an immutable copy of the pre-update base. In that mode the live
+    checkout must NOT reach ``sys.path`` — importing it is how one process ends up
+    holding two code generations, which is the ``ImportError`` half of the
+    bootstrap flaw. ``repo_dir`` keeps its ordinary meaning either way: it is the
+    repository this worker SERVES and EDITS, and under a pin that is exactly the
+    mutable candidate the resolver has to repair.
+    """
     import os as _os
+    import sys as _sys
     # Mark this process as a worker BEFORE importing the agent/LLM stack so the
     # central network-transport policy disables system proxy resolution
     # (trust_env=False) for every HTTP client created here. This is the
     # fork-safety guard (no _scproxy/SCDynamicStoreCopyProxies on the child side
     # of fork) and a clean default for spawned workers too.
     _os.environ["OUROBOROS_IN_WORKER"] = "1"
+    if runtime_root:
+        # Before git_ops, the agent, or any function-local import. The bootstrap
+        # already rooted sys.path at the snapshot; this is the same insertion
+        # again, now that this process knows both roots, so a path the
+        # environment smuggled in cannot outrank the pin.
+        from supervisor.update_runtime_boot import install_snapshot_sys_path
+
+        install_snapshot_sys_path(runtime_root, repo_dir)
     # Before ANY import that resolves the update-tx marker through git_ops (see
     # _bind_worker_repo_root): a spawned child would otherwise gate on the hardcoded default repo.
     _bind_worker_repo_root(repo_dir, drive_root)
@@ -123,6 +143,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
             "ts": utc_now_iso(), "type": "worker_starting",
             "worker_id": wid, "pid": _os.getpid(), "phase": "entry",
+            **({"runtime_root": runtime_root} if runtime_root else {}),
         })
     except Exception:
         log.debug("Worker entry progress unavailable", exc_info=True)
@@ -139,7 +160,11 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         except Exception:
             pass
     from ouroboros.platform_layer import create_new_session
-    create_new_session()
+    # spawn_supervised already establishes the pinned subprocess's session.
+    # Ordinary multiprocessing children still establish theirs here; a failure
+    # must not be swallowed as though process-group custody had succeeded.
+    if not runtime_root:
+        create_new_session()
     # Lifeline: if the supervisor dies abruptly, this worker would keep running
     # LLM rounds invisibly — group-suicide instead. It watches the spawner's
     # parent sentinel, not the ppid: under forkserver the parent is the
@@ -168,10 +193,9 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         set_log_sink(_worker_log_sink)
     except Exception:
         pass
-    import sys as _sys
     import traceback as _tb
     import pathlib as _pathlib
-    if not getattr(_sys, 'frozen', False):
+    if not runtime_root and not getattr(_sys, 'frozen', False):
         _sys.path.insert(0, repo_dir)
     _drive = _pathlib.Path(drive_root)
     # Every worker must pin the runtime-mode baseline. Spawn and forkserver do
@@ -237,6 +261,11 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         _append_jsonl(_drive / "logs" / "events.jsonl", {
             "ts": _utc_now_iso(), "type": "worker_ready", "worker_id": wid,
             "pid": _os.getpid(), "git_branch": _branch, "git_sha": _sha,
+            # The readiness seam verifies git_sha, which is the MUTABLE repo this
+            # worker serves. The pinned runtime it imported from is a separate
+            # fact, disclosed so a resolver's generation is readable after the run.
+            # sys_path_head is the snapshot after both path insertions.
+            **({"runtime_root": runtime_root, "sys_path_head": _sys.path[0]} if runtime_root else {}),
         })
     except Exception as _e:
         _log_worker_crash(wid, _drive, "worker_ready", _e, _tb.format_exc())

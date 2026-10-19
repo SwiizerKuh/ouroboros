@@ -26,7 +26,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+# Ordinary review resources belong to this source installation. A pinned worker
+# explicitly separates its executable tree from its configured system repo;
+# its subprocess environment is final before this module is imported.
+from ouroboros.config import resolve_repo_dir
+
+REPO_ROOT = (resolve_repo_dir() if os.environ.get("OUROBOROS_ASSISTED_RUNTIME_ROOT")
+             else Path(__file__).resolve().parent.parent.parent)
 
 # Shared review prompt budget. estimate_tokens under-counts real tokens, so the
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.

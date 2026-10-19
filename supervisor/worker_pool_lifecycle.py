@@ -649,20 +649,50 @@ def retire_worker(wid: int, slot: Any) -> bool:
         if _pool().WORKERS.get(wid) is not slot or slot.proc.is_alive():
             return False
         _pool().WORKERS.pop(wid)
-    try:
-        slot.in_q.close()
-        slot.in_q.cancel_join_thread()
-    except Exception:
-        log.debug("Failed to close retired worker queue", exc_info=True)
+    close_worker_queue(slot.in_q)
     _record_worker_pids()
     return True
 
 
-def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> bool:
-    """Create or replace a slot under the lifecycle serializer, outside queue lock."""
+def close_worker_queue(in_q: Any) -> None:
+    """Release a worker input queue's buffers; a manager-backed proxy no-ops."""
+    try:
+        in_q.close()
+        in_q.cancel_join_thread()
+    except Exception:
+        log.debug("Failed to close worker input queue", exc_info=True)
+
+
+def start_worker_slot_process(wid: int) -> Tuple[Any, Any]:
+    """Start one worker child and return its ``(process, input queue)``.
+
+    The ONE place that decides which code a worker imports, so the initial pool,
+    every replacement and every boot recovery cannot disagree. Without an assisted
+    update's explicit runtime selection this is exactly the ordinary
+    ``multiprocessing`` birth it has always been; with one, the slot is a pinned
+    plain subprocess (supervisor/update_runtime_worker.py) and a missing or corrupt
+    snapshot raises rather than quietly falling back to the live tree — importing
+    that tree mid-merge is the failure the pin exists to prevent.
+    """
+    from supervisor.update_runtime import active_runtime_pin
+
+    pin = active_runtime_pin()
+    if pin:
+        from supervisor.update_runtime_worker import pinned_worker_queue, start_pinned_worker
+
+        in_q = pinned_worker_queue(_pool().worker_queue_manager())
+        try:
+            proc = start_pinned_worker(
+                wid, pin, in_q=in_q, event_q=_pool().get_event_q(),
+                repo_dir=str(_pool().REPO_DIR), drive_root=str(_pool().DRIVE_ROOT),
+                custody_session_id=_current_custody_session_id(),
+            )
+        except Exception:
+            close_worker_queue(in_q)
+            raise
+        return proc, in_q
     ctx = _pool()._get_ctx()
     in_q = ctx.Queue()
-    events_cursor, spawned_at = events_log_cursor(), time.time()
     proc = ctx.Process(target=worker_main,
                        args=(wid, in_q, _pool().get_event_q(), str(_pool().REPO_DIR), str(_pool().DRIVE_ROOT),
                              _current_custody_session_id()))
@@ -670,12 +700,15 @@ def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> 
     try:
         proc.start()
     except Exception:
-        try:
-            in_q.close()
-            in_q.cancel_join_thread()
-        except Exception:
-            pass
+        close_worker_queue(in_q)
         raise
+    return proc, in_q
+
+
+def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> bool:
+    """Create or replace a slot under the lifecycle serializer, outside queue lock."""
+    events_cursor, spawned_at = events_log_cursor(), time.time()
+    proc, in_q = start_worker_slot_process(wid)
     installed = False
     with _queue_lock:
         if _pool().WORKERS.get(wid) is old:
@@ -690,20 +723,12 @@ def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> 
                 proc.terminate()
             proc.join(timeout=2)
         finally:
-            try:
-                in_q.close()
-                in_q.cancel_join_thread()
-            except Exception:
-                pass
+            close_worker_queue(in_q)
         return False
     # Close the crashed worker's old queue now that nothing can route to it,
     # otherwise its file descriptors / semaphores leak on every respawn.
     if old is not None and getattr(old, "in_q", None) is not None:
-        try:
-            old.in_q.close()
-            old.in_q.cancel_join_thread()
-        except Exception:
-            log.debug("Failed to close old worker queue on respawn", exc_info=True)
+        close_worker_queue(old.in_q)
     _record_worker_pids()
     threading.Thread(
         target=_pool()._verify_worker_sha_after_spawn,

@@ -99,10 +99,17 @@ def clear_update_tx() -> bool:
     try:
         _update_tx_marker_path().unlink()
     except FileNotFoundError:
-        return True
+        pass
     except Exception:
         _g.log.warning("Failed to clear update tx marker", exc_info=True)
         return False
+    # The transaction is over, so the pool returns to ordinary multiprocessing.
+    # Only on success: while a live marker still gates commits, the resolver's
+    # pinned runtime must stay selected rather than silently become the live tree.
+    # The snapshot itself is retained (supervisor/update_runtime.py).
+    from supervisor.update_runtime import clear_assisted_runtime
+
+    clear_assisted_runtime()
     return True
 
 
@@ -125,6 +132,10 @@ _ASSISTED_AUTHORITY_FIELDS = (
 )
 _PRE_RESTART_SMOKE_PENDING = "pending"
 _PRE_RESTART_SMOKE_PASSED = "passed"
+# Additive tx field (no schema break): the immutable runtime an assisted
+# resolver imports from. An N-1 reader ignores it; a reader that needs it and
+# does not find it reconstructs the base instead of guessing.
+RUNTIME_PIN_FIELD = "runtime_pin"
 
 
 def assisted_authority_fingerprint(tx: Dict[str, Any]) -> str:
@@ -536,11 +547,108 @@ def _finish_rollback(
     return True, message
 
 
+def pin_assisted_runtime(tx: Dict[str, Any], base_sha: str) -> Tuple[bool, str]:
+    """Freeze ``base_sha``'s runtime for this update's resolver, while the tree is clean.
+
+    Must run BEFORE the resolver is booted and therefore before the merge is
+    staged: the whole point is that the code the resolver imports was captured at
+    a moment when it still parsed. Records the pin on ``tx`` (additive field —
+    an older reader ignores it) and selects it, so every worker this update
+    starts, replaces or recovers imports the same frozen generation.
+    """
+    from supervisor.update_runtime import publish_runtime_snapshot, select_assisted_runtime
+
+    try:
+        pin = select_assisted_runtime(
+            publish_runtime_snapshot(_g.REPO_DIR, _g.DRIVE_ROOT, base_sha)
+        )
+    except Exception as exc:
+        _log_supervisor({"type": "managed_update_runtime_pin_failed",
+                         "base_sha": str(base_sha or ""), "error": str(exc)[:400]})
+        return False, str(exc)
+    tx[RUNTIME_PIN_FIELD] = pin
+    _log_supervisor({"type": "managed_update_runtime_pinned",
+                     "base_sha": str(pin.get("sha") or ""), "root": str(pin.get("root") or ""),
+                     "file_count": int(pin.get("file_count") or 0)})
+    return True, ""
+
+
+def ensure_assisted_runtime_selected(tx: Dict[str, Any]) -> Tuple[bool, str]:
+    """Make this transaction's pinned runtime the selected one, or refuse.
+
+    A pin the transaction already recorded is used as recorded. If that snapshot
+    is missing or corrupt, this refuses and does not publish a replacement: the
+    on-disk tree, when one remains, is forensic evidence and is left in place.
+
+    The only creation with conflicts already live is a transaction that never
+    recorded a pin (an updater older than runtime pins). Publication then reads
+    the git object database, and only when the snapshot directory is absent and
+    the base contains the pinned-worker bootstrap. An existing invalid snapshot
+    is refused rather than replaced. A base without the bootstrap cannot host an
+    isolated resolver — the caller then blocks or rolls back instead of starting
+    a worker that would import the conflicted tree.
+    """
+    from supervisor.update_runtime import (
+        clear_assisted_runtime, publish_runtime_snapshot,
+        select_assisted_runtime, validate_runtime_snapshot,
+    )
+
+    recorded = dict(tx.get(RUNTIME_PIN_FIELD) or {})
+    base = str(tx.get("pre_update_sha") or tx.get("base_sha") or recorded.get("sha") or "")
+    if not base:
+        return False, "the update transaction records no base sha to pin a runtime to"
+    if recorded and str(recorded.get("sha") or "") != base:
+        clear_assisted_runtime()
+        return False, "recorded runtime pin does not describe the transaction base"
+    # A process-local selection cannot override the transaction's recorded pin.
+    # Always validate that record, including when a same-SHA worker is active.
+    if recorded:
+        ok, reason = validate_runtime_snapshot(recorded)
+        if not ok:
+            clear_assisted_runtime()
+            _log_supervisor({"type": "managed_update_runtime_pin_unavailable",
+                             "base_sha": base, "error": (reason or "")[:400]})
+            return False, reason or "recorded runtime snapshot is unusable"
+        try:
+            select_assisted_runtime(recorded)
+        except Exception as exc:
+            clear_assisted_runtime()
+            return False, str(exc)
+        return True, ""
+    # Legacy unrecorded transaction. publish_runtime_snapshot creates the exact
+    # base only when the target is absent, and refuses an invalid tree it finds.
+    try:
+        rebuilt = publish_runtime_snapshot(_g.REPO_DIR, _g.DRIVE_ROOT, base)
+        select_assisted_runtime(rebuilt)
+    except Exception as exc:
+        _log_supervisor({"type": "managed_update_runtime_pin_unavailable",
+                         "base_sha": base, "error": str(exc)[:400]})
+        return False, str(exc)
+    tx[RUNTIME_PIN_FIELD] = rebuilt
+    _log_supervisor({"type": "managed_update_runtime_pin_restored",
+                     "base_sha": base, "legacy_tx": True,
+                     "file_count": int(rebuilt.get("file_count") or 0)})
+    return True, ""
+
+
 def ensure_assisted_resolver_ready(expected_sha: str, timeout_sec: float = 90.0) -> bool:
-    """Prove a fresh resolver imported the exact clean tree before conflicts go live."""
+    """Prove a fresh resolver imported the exact clean tree before conflicts go live.
+
+    Requires the pinned runtime for ``expected_sha`` to be selected already: the
+    worker whose readiness is being proven has to be the one that will still be
+    importable after the merge is staged, and there is no fallback to the live
+    tree for the resolver to prove anything about.
+    """
     from supervisor import workers
     from supervisor.queue import _queue_lock
+    from supervisor.update_runtime import active_runtime_pin
 
+    pin = active_runtime_pin()
+    if str(pin.get("sha") or "") != str(expected_sha or ""):
+        _g.log.warning(
+            "assisted resolver readiness refused: no runtime pinned at %s", str(expected_sha)[:12],
+        )
+        return False
     with _queue_lock:
         if workers.WORKERS:
             return False  # update quiescence must leave no ambiguous prior generation
@@ -636,6 +744,14 @@ def enqueue_assisted_resolution_task(tx: Dict[str, Any]) -> str:
             }
         },
     }
+    pin_ok, pin_detail = ensure_assisted_runtime_selected(tx)
+    if not pin_ok:
+        # No resolver at all rather than one that imports the conflicted tree.
+        # gate_blocked is boot's retry-the-rollback phase, so the owner is left
+        # with a recoverable transaction instead of a wedged one.
+        mark_update_tx_gate_blocked("assisted_runtime_pin_unavailable", pin_detail)
+        _g.log.warning("enqueue_assisted_resolution_task: %s", pin_detail)
+        return ""
     try:
         if not workers.ensure_worker_pool_started(allow_disabled_restart=True):
             _g.log.warning(
@@ -876,6 +992,24 @@ def _recover_assisted_on_boot(tx: Dict[str, Any], supervisor_ready: bool) -> Dic
         # progress when MERGE_HEAD + a dirty tree already survived.
         rc_d, dirty, _de = _g.git_capture(["git", "status", "--porcelain"])
         has_progress = bool(_merge_head_sha()) and rc_d == 0 and bool(dirty.strip())
+        pin_ok, pin_detail = ensure_assisted_runtime_selected(tx)
+        if not pin_ok:
+            # Fail closed, choosing the non-destructive exit when there is work to
+            # lose: a partially resolved merge is the owner's, so it is preserved
+            # behind gate_blocked, while a resume that has not started anything
+            # rolls back to the clean pre-update state.
+            if has_progress:
+                mark_update_tx_gate_blocked("assisted_runtime_pin_unavailable", pin_detail)
+                _log_supervisor({"type": "managed_update_assisted_runtime_blocked",
+                                 "detail": pin_detail[:400], "preserved_progress": True})
+                return {"finalized": False, "blocked": True,
+                        "reason": "assisted_runtime_pin_unavailable", "msg": pin_detail}
+            ok, msg = rollback_managed_update(
+                "assisted_runtime_pin_unavailable", reopen_writer_admission=False
+            )
+            _log_supervisor({"type": "managed_update_assisted_runtime_blocked",
+                             "detail": pin_detail[:400], "rollback": msg})
+            return {"finalized": False, "rolled_back": ok, "msg": pin_detail}
         if has_progress:
             if not tx.get("m0_tree"):
                 if str(tx.get("phase") or "") == "materializing_assisted":

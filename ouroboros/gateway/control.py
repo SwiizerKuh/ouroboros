@@ -357,8 +357,13 @@ async def api_update_check(_request: Request) -> JSONResponse:
 def _respawn_workers_after_failed_update() -> None:
     """Revive workers when an update aborts after they were stopped (no restart follows)."""
     try:
+        from supervisor.update_runtime import clear_assisted_runtime
         from supervisor.workers import ensure_worker_pool_started, open_repo_writer_admission
 
+        # The pool being revived is the ORDINARY one: an aborted update leaves no
+        # resolver to keep on a pinned runtime, and a selection surviving here
+        # would quietly route normal tasks through a frozen base.
+        clear_assisted_runtime()
         open_repo_writer_admission()
         ensure_worker_pool_started(allow_disabled_restart=True)
     except Exception:
@@ -664,6 +669,7 @@ def _start_assisted_merge_fenced(plan: dict, tx: dict) -> JSONResponse:
         ensure_assisted_resolver_ready,
         existing_failed_update_ref,
         materialize_assisted_merge_live,
+        pin_assisted_runtime,
         write_update_tx,
     )
     from supervisor.workers import close_repo_writer_admission, kill_workers_for_update
@@ -844,6 +850,23 @@ def _start_assisted_merge_fenced(plan: dict, tx: dict) -> JSONResponse:
         **({"failed_update_ref": prior_attempt_ref} if prior_attempt_ref else {}),
     })
     close_repo_writer_admission(assisted_writer_gate_reason(tx))
+    # Freeze the runtime the resolver will import BEFORE booting it, which is
+    # also before any conflict marker exists: the tree is still exactly base_sha
+    # here, so the snapshot is the reviewed base by construction. Every worker
+    # this update starts, replaces or recovers then runs that one generation.
+    pin_ok, pin_detail = pin_assisted_runtime(tx, base_sha)
+    if not pin_ok:
+        # Nothing has touched the tree: bring the stashed work back and let the
+        # owner retry rather than stage conflicts no resolver could survive.
+        note = _unwind_stashed_update(tx, "assisted_runtime_pin_failed")
+        _respawn_workers_after_failed_update()
+        return JSONResponse(
+            {"error": "Assisted update could not pin a clean runtime for its resolver "
+                      f"({pin_detail}); nothing was changed.",
+             "reason": "assisted_runtime_pin_failed",
+             **({"stash_note": note} if note else {})},
+            status_code=409,
+        )
     if not ensure_assisted_resolver_ready(base_sha):
         blockers = kill_workers_for_update(
             result_reason="Assisted update resolver did not become ready.",

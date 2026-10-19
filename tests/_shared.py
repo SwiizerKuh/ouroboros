@@ -243,3 +243,35 @@ def hermetic_node_bin():
             if key is not None and (best is None or key > best):
                 best, best_path = key, str(binary)
     return best_path if best_path is not None else fallback
+
+
+def stub_assisted_runtime_pin(monkeypatch, sha: str = "pinned-base-sha", *, root=None) -> dict:
+    """Satisfy the assisted-update runtime pin without publishing a real snapshot.
+
+    An assisted merge now pins the pre-update runtime (supervisor/update_runtime.py)
+    and refuses to boot a resolver without it. Publication, byte-exact validation
+    and the fail-closed refusals are covered against REAL snapshots and a REAL
+    worker process in ``tests/test_update_runtime_isolation.py``; the orchestration
+    tests that call this helper are pinning ordering and routing, so they stub the
+    pin rather than re-verify sixteen megabytes of bytes per case.
+    """
+    from supervisor import update_merge, update_runtime
+
+    pin = {
+        "schema_version": 1,
+        "sha": str(sha),
+        "root": str(root or "/stub/update_runtime/" + str(sha)),
+        "manifest_sha256": "0" * 64,
+        "file_count": 1,
+        "published_at": "2026-01-01T00:00:00+00:00",
+    }
+    monkeypatch.setattr(update_runtime, "active_runtime_pin", lambda: dict(pin))
+    monkeypatch.setattr(update_runtime, "clear_assisted_runtime", lambda: True)
+
+    def _pin(tx, base_sha):
+        tx[update_merge.RUNTIME_PIN_FIELD] = {**pin, "sha": str(base_sha or sha)}
+        return True, ""
+
+    monkeypatch.setattr(update_merge, "pin_assisted_runtime", _pin)
+    monkeypatch.setattr(update_merge, "ensure_assisted_runtime_selected", lambda _tx: (True, ""))
+    return pin

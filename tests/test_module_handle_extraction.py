@@ -74,7 +74,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_WORKER_POOL_DISABLED_REASON", "_worker_pool_execution_state", "disable_exhausted_worker_pool",
         "_get_ctx",
         "_verify_worker_sha_after_spawn", "get_event_q", "kill_workers", "load_state",
-        "reconstruct_task_cost", "send_with_budget",
+        "reconstruct_task_cost", "send_with_budget", "worker_queue_manager",
     })),
     "supervisor/worker_promotion.py": ("supervisor/workers.py", "_pool", frozenset({
         "DRIVE_ROOT", "PENDING", "REPO_DIR", "RUNNING", "_announce_created_project",

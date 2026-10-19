@@ -91,7 +91,11 @@ def _enqueue_origin(pool, monkeypatch, origin):
         task_id = queue.PENDING[0]["id"]
     else:
         from supervisor import update_merge
+        from tests._shared import stub_assisted_runtime_pin
 
+        # Exercise real hurry/admission/death handling, not archive publication
+        # against this intentionally non-Git lifecycle fixture.
+        stub_assisted_runtime_pin(monkeypatch, "baseline")
         task_id = "update_assisted_merge_test"
         tx = {"task_id": task_id, "phase": "assisted_resolution", "owner_chat_id": 1,
               "target_sha": "target", "pre_update_sha": "baseline"}

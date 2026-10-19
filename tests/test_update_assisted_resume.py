@@ -22,6 +22,9 @@ def _stub_resolver_queue(monkeypatch):
     import supervisor.queue as queue
     import supervisor.workers as workers
 
+    # These tests isolate task/root identity, not runtime publication. The real
+    # pin/refusal paths are covered by test_update_runtime_isolation.
+    tua.stub_assisted_runtime_pin(monkeypatch, "pinned-base-sha")
     monkeypatch.setattr(workers, "ensure_worker_pool_started", lambda **_kwargs: True)
     monkeypatch.setattr(workers, "PENDING", [])
     monkeypatch.setattr(workers, "RUNNING", {})

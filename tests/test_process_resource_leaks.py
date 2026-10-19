@@ -208,11 +208,29 @@ def test_record_worker_pids_roundtrip(tmp_path, monkeypatch):
 # ───────────────────── #4/#6 + #7: source contracts ─────────────────────────
 
 def test_respawn_closes_old_queue_under_lock():
-    # respawn moved to the pool-lifecycle owner; the pool still spawns.
+    # Replacement is published under the queue lock before the detached queue
+    # is closed. Both ordinary and pinned birth use the same cleanup helper.
     src = _read("supervisor/worker_pool_lifecycle.py")
     assert "with _queue_lock:" in src
-    assert "old.in_q.close()" in src
-    assert "old.in_q.cancel_join_thread()" in src
+    assert "close_worker_queue(old.in_q)" in src
+    assert "in_q.close()" in src
+    assert "in_q.cancel_join_thread()" in src
+
+
+def test_worker_queue_cleanup_releases_both_resources():
+    from supervisor.worker_pool_lifecycle import close_worker_queue
+
+    calls = []
+
+    class Queue:
+        def close(self):
+            calls.append("close")
+
+        def cancel_join_thread(self):
+            calls.append("cancel_join_thread")
+
+    close_worker_queue(Queue())
+    assert calls == ["close", "cancel_join_thread"]
 
 
 def test_spawn_reaps_orphans_and_records_pids():

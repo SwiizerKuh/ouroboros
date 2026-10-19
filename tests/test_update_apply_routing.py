@@ -10,6 +10,7 @@ import pytest
 from starlette.responses import JSONResponse
 
 from ouroboros.gateway import control
+from tests._shared import stub_assisted_runtime_pin
 
 
 BASE = "a" * 40
@@ -452,6 +453,7 @@ def test_assisted_resolver_boots_before_conflicts_reach_live_tree(
     monkeypatch.setattr(state, "load_state", lambda: {"owner_chat_id": 1})
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 10.0)
     monkeypatch.setattr(update_merge, "create_rescue_local_ref", lambda _sha: True)
+    stub_assisted_runtime_pin(monkeypatch, BASE)
     monkeypatch.setattr(
         update_merge,
         "ensure_assisted_resolver_ready",
@@ -567,6 +569,7 @@ def test_resolver_fence_blockers_still_unwind_the_stash(monkeypatch):
     monkeypatch.setattr(state, "load_state", lambda: {"owner_chat_id": 1})
     monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 10.0)
     monkeypatch.setattr(update_merge, "create_rescue_local_ref", lambda _sha: "rescue-local-x")
+    stub_assisted_runtime_pin(monkeypatch, BASE)
     monkeypatch.setattr(update_merge, "ensure_assisted_resolver_ready", lambda _sha: False)
     monkeypatch.setattr(workers, "close_repo_writer_admission", lambda _reason: None)
     monkeypatch.setattr(workers, "kill_workers_for_update", lambda **_k: ["stuck-writer"])

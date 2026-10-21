@@ -513,3 +513,120 @@ def test_dependency_sync_never_installs_into_an_interpreter_under_test(monkeypat
 class _NeverRun:
     def wait(self, timeout=None):  # pragma: no cover - the boundary must precede this
         raise AssertionError("the suppressed path must not wait on a pip process")
+
+
+def test_status_path_does_not_take_official_release():
+    import inspect
+
+    assert "official_release" not in inspect.getsource(git_ops.compute_managed_update_status)
+
+
+def test_resolve_wrapper_forwards_named_release_only(monkeypatch):
+    seen = []
+
+    def resolve(*_args, **kwargs):
+        seen.append(kwargs)
+        return "refs/ouroboros-managed/tags/v6.87.5", "sha", ""
+
+    monkeypatch.setattr(git_ops._update_source, "resolve_managed_update_target", resolve)
+    git_ops._resolve_managed_update_target("managed", "main", "managed/main", "stable")
+    git_ops._resolve_managed_update_target(
+        "managed", "main", "managed/main", "stable", official_release="   ",
+    )
+    git_ops._resolve_managed_update_target(
+        "managed", "main", "managed/main", "stable", official_release=" v6.87.5 ",
+    )
+    git_ops._resolve_managed_update_target(
+        "managed", "main", "managed/main", "stable", official_release=7,
+    )
+
+    assert "official_release" not in seen[0]
+    assert "official_release" not in seen[1]
+    assert seen[2]["official_release"] == "v6.87.5"
+    assert seen[3]["official_release"] == 7
+    assert all(row["capture"] is git_ops.git_capture for row in seen)
+
+
+def _stub_prepare_reads(monkeypatch):
+    monkeypatch.setattr(git_ops, "_read_managed_repo_meta", lambda: {"managed_remote_name": "managed"})
+    monkeypatch.setattr(git_ops, "_managed_update_target", lambda: ("managed", "main", "managed/main"))
+    monkeypatch.setattr(git_ops, "BRANCH_DEV", "ouroboros")
+
+    def fake_git_capture(cmd):
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return 0, "ouroboros", ""
+        if cmd == ["git", "rev-parse", "--verify", "HEAD"]:
+            return 0, "base-sha", ""
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(git_ops, "git_capture", fake_git_capture)
+    monkeypatch.setattr(
+        git_ops,
+        "_create_rescue_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("rescue must not run")),
+    )
+
+
+def test_prepare_forwards_official_release_only_when_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
+    _stub_prepare_reads(monkeypatch)
+    seen = []
+
+    def resolve(*_args, **kwargs):
+        seen.append(kwargs)
+        return "", "", "stopped"
+
+    monkeypatch.setattr(git_ops, "_resolve_managed_update_target", resolve)
+    git_ops.prepare_managed_update(
+        "replace", expected_base_sha="base-sha", expected_target_sha="newer-sha",
+    )
+    git_ops.prepare_managed_update(
+        "replace", expected_base_sha="base-sha", expected_target_sha="newer-sha",
+        official_release="   ",
+    )
+    ok, payload = git_ops.prepare_managed_update(
+        "replace", expected_base_sha="base-sha", expected_target_sha="newer-sha",
+        official_release="v6.87.5",
+    )
+
+    assert seen == [{}, {}, {"official_release": "v6.87.5"}]
+    assert ok is False
+    assert payload["reason"] == "target_unavailable"
+
+
+def test_prepare_checks_expected_sha_against_explicit_release(monkeypatch, tmp_path):
+    monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
+    _stub_prepare_reads(monkeypatch)
+
+    def resolve(*_args, **kwargs):
+        if kwargs.get("official_release") == "v6.87.5":
+            return "refs/ouroboros-managed/tags/v6.87.5", "older-sha", ""
+        return "refs/ouroboros-managed/tags/v6.88.0", "newer-sha", ""
+
+    monkeypatch.setattr(git_ops, "_resolve_managed_update_target", resolve)
+    ok, payload = git_ops.prepare_managed_update(
+        "replace", expected_base_sha="base-sha", expected_target_sha="newer-sha",
+        official_release="v6.87.5",
+    )
+
+    assert ok is False
+    assert payload["reason"] == "release_moved"
+    assert "older-sha" in payload["error"]
+
+
+def test_prepare_refuses_non_string_release_without_mutation(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("invalid official_release must not mutate")
+
+    monkeypatch.setattr(git_ops, "_resolve_managed_update_target", boom)
+    monkeypatch.setattr(git_ops, "_create_rescue_snapshot", boom)
+    monkeypatch.setattr(git_ops, "git_capture", boom)
+    ok, payload = git_ops.prepare_managed_update(
+        "replace",
+        expected_base_sha="base-sha",
+        expected_target_sha="remote-sha",
+        official_release=None,
+    )
+
+    assert ok is False
+    assert payload["reason"] == "invalid_official_release"

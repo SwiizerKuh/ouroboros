@@ -356,3 +356,67 @@ def test_mark_update_tx_gate_blocked_does_not_invent_a_transaction(tmp_path, mon
 
     update_merge.mark_update_tx_gate_blocked("post_commit_gate_failed", "detail")
     assert update_merge.read_update_tx() == {}, "a gate-blocked marker was invented from no tx"
+
+
+def test_planner_forwards_official_release_only_when_set(tmp_path, monkeypatch):
+    repo, _head = _init_repo(tmp_path)
+    _point_at(monkeypatch, repo)
+    seen = []
+
+    def resolve(*_args, **kwargs):
+        seen.append(kwargs)
+        return "", "", "official release tag is not in the fetched managed namespace: v9.9.9"
+
+    monkeypatch.setattr(git_ops, "_resolve_managed_update_target", resolve)
+    omitted = update_merge.plan_managed_update_merge(fetch=False)
+    blank = update_merge.plan_managed_update_merge(fetch=False, official_release="   ")
+    named = update_merge.plan_managed_update_merge(fetch=False, official_release="  v6.87.5 ")
+
+    assert seen == [{}, {}, {"official_release": "v6.87.5"}]
+    assert "official_release" not in omitted
+    assert "official_release" not in blank
+    assert named["official_release"] == "v6.87.5"
+    assert named["available"] is False
+    assert "v9.9.9" in named["error"]
+    assert "target_sha" not in named
+
+
+def test_planner_refuses_non_string_release_before_git(monkeypatch):
+    monkeypatch.setattr(git_ops, "_managed_update_target", lambda: ("managed", "main", "managed/main"))
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("invalid official_release must not touch git")
+
+    monkeypatch.setattr(git_ops, "git_capture", boom)
+    monkeypatch.setattr(git_ops, "git_fetch_bounded", boom)
+    monkeypatch.setattr(git_ops, "_resolve_managed_update_target", boom)
+
+    plan = update_merge.plan_managed_update_merge(fetch=True, official_release=["v6.87.5"])
+
+    assert plan["available"] is False
+    assert plan["kind"] == "unavailable"
+    assert plan["error"] == "official_release must be a plain vX.Y.Z tag"
+    assert "official_release" not in plan
+
+
+def test_explicit_release_still_uses_constitution_check(tmp_path, monkeypatch):
+    repo, _head = _init_repo(tmp_path)
+    _point_at(monkeypatch, repo)
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(
+        git_ops,
+        "_resolve_managed_update_target",
+        lambda *_args, **kwargs: ("refs/ouroboros-managed/tags/v6.87.5", sha, ""),
+    )
+    checked = []
+    monkeypatch.setattr(
+        update_merge,
+        "managed_update_constitution_present",
+        lambda ref: checked.append(ref) or False,
+    )
+
+    plan = update_merge.plan_managed_update_merge(fetch=False, official_release="v6.87.5")
+
+    assert checked == [sha]
+    assert plan["official_release"] == "v6.87.5"
+    assert "does not preserve BIBLE.md" in plan["error"]

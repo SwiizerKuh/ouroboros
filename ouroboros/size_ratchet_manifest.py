@@ -226,6 +226,7 @@ BAND_PATHS = {
     "tests/test_transport_death_retry.py": "Physical transport-repeat and exceptional-loop evidence tests share the same scripted provider and real tool-execution fixture; retain this coherent contract suite below the module cap.",
     "tests/test_tree_cost_ceiling.py": "Budget-rail coverage entered the band with the cache-split ownership, candidate-predicate, soft-landing, probe-confirmed stop and one-row-per-delegated-run regressions; one focused suite for the tree cost ceiling.",
     "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
+    "tests/test_update_apply_routing.py": "Gateway update routing regression matrix includes explicit release selection through both fenced replans and malformed request coverage.",
     "tests/test_update_letter.py": "Entered the band from 969 lines: the update-letter contract gained the HTTP-200 body-error verdicts (a body overflow earns the same single Low retry, other body errors are typed provider failures) and the attempt ids of calls that raised (update-letter sprint 2026-09-04).",
     "tests/test_update_runtime_isolation.py": "Production-start isolation, mutable-resource binding and custody regressions share real subprocess fixtures and one generation contract.",
     "tests/test_usage_accounting.py": None,

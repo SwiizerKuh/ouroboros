@@ -109,6 +109,57 @@ def _managed_update_target() -> Tuple[str, str, str]:
     return remote_name, remote_branch, target_ref
 
 
+def _official_release_forward_kwargs(official_release: object) -> dict:
+    """Forward a named release without changing the newest-feed call.
+
+    Blank and whitespace-only strings are omitted so callers replaced by
+    ``lambda *_args`` keep working. Any other value is forwarded, including a
+    non-string, so the resolver can refuse it instead of selecting a newer tag.
+    """
+    if isinstance(official_release, str):
+        selected = official_release.strip()
+        return {"official_release": selected} if selected else {}
+    return {"official_release": official_release}
+
+
+def _resolve_explicit_stable_release(
+    remote_name: str,
+    selected: str,
+    update_channel: str,
+    capture: Callable[[List[str]], Tuple[int, str, str]],
+) -> Tuple[str, str, str]:
+    """Resolve one plain stable tag. Never substitutes a different tag."""
+    if str(update_channel or "") != "stable":
+        return "", "", "official_release is only valid on the stable channel"
+    if _RELEASE_TAG_RE.fullmatch(selected) is None:
+        return "", "", "official_release must be a plain vX.Y.Z tag"
+    main_ref = f"{remote_name}/main"
+    qa_ref = f"{remote_name}/ouroboros-stable"
+    for required_ref in (main_ref, qa_ref):
+        rc, _sha, error = capture(
+            ["git", "rev-parse", "--verify", f"{required_ref}^{{commit}}"]
+        )
+        if rc != 0:
+            return "", "", error or f"stable release branch is unavailable: {required_ref}"
+    tag_ref = f"{MANAGED_TAG_NAMESPACE}/{selected}"
+    rc, sha, error = capture(
+        ["git", "rev-parse", "--verify", f"{tag_ref}^{{commit}}"]
+    )
+    if rc != 0 or not sha:
+        detail = f"official release tag is not in the fetched managed namespace: {selected}"
+        return "", "", f"{detail} ({error})" if error else detail
+    for release_branch_ref in (main_ref, qa_ref):
+        ancestor_rc, _out, _ancestor_error = capture(
+            ["git", "merge-base", "--is-ancestor", sha, release_branch_ref]
+        )
+        if ancestor_rc != 0:
+            return "", "", (
+                f"official release {selected} is not reachable from both "
+                "main and ouroboros-stable"
+            )
+    return tag_ref, sha, ""
+
+
 def resolve_managed_update_target(
     remote_name: str,
     remote_branch: str,
@@ -116,16 +167,30 @@ def resolve_managed_update_target(
     *,
     update_channel: str,
     capture: Callable[[List[str]], Tuple[int, str, str]],
+    official_release: str = "",
 ) -> Tuple[str, str, str]:
     """Resolve the selected feed to one immutable commit.
 
     QA and Development follow their branch tips. Stable follows the newest plain
     ``vX.Y.Z`` release whose commit is reachable from both ``main`` and
-    ``ouroboros-stable``. This keeps an untagged main commit out of the stable
+    ``ouroboros-stable`` unless ``official_release`` names one such tag. A
+    non-empty value must be a plain ``vX.Y.Z`` tag on the stable channel. It
+    resolves only ``refs/ouroboros-managed/tags/<tag>^{commit}`` and that peeled
+    commit must be reachable from both release branches. Invalid, unknown, and
+    non-string values are errors: they do not fall through to the newest tag or
+    to a branch tip. The planner's existing ``BIBLE.md`` check still runs on
+    the peeled commit. This keeps an untagged main commit out of the stable
     feed without creating a second channel-specific updater.
     """
+    if not isinstance(official_release, str):
+        return "", "", "official_release must be a plain vX.Y.Z tag"
+    selected = official_release.strip()
     if not remote_name or not remote_branch or not branch_ref:
         return "", "", "managed update target is unavailable"
+    if selected:
+        return _resolve_explicit_stable_release(
+            remote_name, selected, update_channel, capture
+        )
     if str(update_channel or "") != "stable":
         rc, sha, error = capture(
             ["git", "rev-parse", "--verify", f"{branch_ref}^{{commit}}"]

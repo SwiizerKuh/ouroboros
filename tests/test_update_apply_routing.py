@@ -146,7 +146,7 @@ def test_preflight_returns_only_merge_plan(monkeypatch):
 
     monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: _plan())
 
-    payload = _body(asyncio.run(control.api_update_preflight(None)))
+    payload = _body(asyncio.run(control.api_update_preflight(_Request({}))))
 
     assert payload == {"merge_plan": _plan()}
 
@@ -842,3 +842,295 @@ def test_assisted_task_end_reopens_only_its_cross_process_writer_gate(
     assert update_merge.clear_update_tx() is True
     assert update_merge.release_assisted_writer_gate_after_task(metadata) is True
     assert workers.repo_writer_admission_closed() == ""
+
+
+OLDER = "c" * 40
+TAG = "refs/ouroboros-managed/tags/v7.7.0"
+
+
+def _recording_plan(calls, *, selected_sha=None):
+    def plan(**kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("official_release") == "v7.7.0":
+            return _plan(
+                target_sha=selected_sha or TARGET,
+                target_ref=TAG,
+                official_release="v7.7.0",
+            )
+        return _plan()
+
+    return plan
+
+
+def test_preflight_decoder_threads_official_release_and_refuses_invalid(monkeypatch):
+    import supervisor.update_merge as update_merge
+
+    calls = []
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", _recording_plan(calls, selected_sha=OLDER))
+
+    empty = _body(asyncio.run(control.api_update_preflight(_Request({}))))
+    blank = _body(asyncio.run(control.api_update_preflight(_Request({"official_release": "   "}))))
+    named = _body(asyncio.run(control.api_update_preflight(_Request({"official_release": " v7.7.0 "}))))
+
+    assert calls == [
+        {"fetch": True},
+        {"fetch": True},
+        {"fetch": True, "official_release": "v7.7.0"},
+    ]
+    assert "official_release" not in empty["merge_plan"]
+    assert named["merge_plan"]["target_sha"] == OLDER
+    assert named["merge_plan"]["official_release"] == "v7.7.0"
+    assert blank["merge_plan"]["target_sha"] == TARGET
+
+    before = len(calls)
+    for bad in (7, None, ["v7.7.0"], {"tag": "v7.7.0"}, True):
+        response = asyncio.run(control.api_update_preflight(_Request({"official_release": bad})))
+        assert response.status_code == 400
+        assert "official_release" in _body(response)["error"]
+        assert "JSON string" in _body(response)["error"]
+    response = asyncio.run(control.api_update_preflight(_Request(["v7.7.0"])))
+    assert response.status_code == 400
+    assert "object" in _body(response)["error"]
+    assert len(calls) == before
+
+
+def test_smart_fenced_replans_carry_official_release_and_wrong_sha_stops(monkeypatch):
+    import supervisor.git_ops as git_ops
+    import supervisor.update_merge as update_merge
+
+    calls = []
+    _wire_smart(monkeypatch, [])
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", _recording_plan(calls))
+    monkeypatch.setattr(
+        control, "_apply_clean_merge_fenced",
+        lambda *_args, **_kwargs: JSONResponse({"route": "clean"}),
+    )
+    monkeypatch.setattr(
+        git_ops, "checkout_and_reset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("checkout")),
+    )
+
+    response = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "auto_merge",
+        "expected_base_sha": BASE,
+        "expected_target_sha": TARGET,
+        "official_release": " v7.7.0 ",
+    })))
+
+    assert response.status_code == 200
+    assert calls == [
+        {"fetch": True, "build": False, "official_release": "v7.7.0"},
+        {"fetch": False, "build": True, "official_release": "v7.7.0"},
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(
+        update_merge, "plan_managed_update_merge", _recording_plan(calls),
+    )
+    omitted = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "assisted",
+        "expected_base_sha": BASE,
+        "expected_target_sha": TARGET,
+        "official_release": "   ",
+    })))
+    assert omitted.status_code == 200
+    assert calls == [
+        {"fetch": True, "build": False},
+        {"fetch": False, "build": True},
+    ]
+
+    calls.clear()
+    monkeypatch.setattr(
+        update_merge, "plan_managed_update_merge",
+        _recording_plan(calls, selected_sha=OLDER),
+    )
+    monkeypatch.setattr(
+        update_merge, "acquire_update_lock",
+        lambda: (_ for _ in ()).throw(AssertionError("wrong SHA must not lock")),
+    )
+    monkeypatch.setattr(control, "_respawn_workers_after_failed_update", lambda: None)
+    monkeypatch.setattr(
+        control, "_quiesce_repo_writers",
+        lambda _reason: (_ for _ in ()).throw(AssertionError("wrong SHA must not fence")),
+    )
+    moved = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "assisted",
+        "expected_base_sha": BASE,
+        "expected_target_sha": TARGET,
+        "official_release": "v7.7.0",
+    })))
+    assert moved.status_code == 409
+    assert _body(moved)["reason"] == "release_moved"
+    assert calls == [{"fetch": True, "build": False, "official_release": "v7.7.0"}]
+
+
+def test_replace_plan_and_prepare_carry_official_release(monkeypatch):
+    import supervisor.git_ops as git_ops
+    import supervisor.update_merge as update_merge
+
+    plans = []
+    prepares = []
+    # The synthetic prepare refusal must not revive a real worker pool.
+    monkeypatch.setattr(control, "_respawn_workers_after_failed_update", lambda: None)
+    monkeypatch.setattr(
+        update_merge, "plan_managed_update_merge", _recording_plan(plans),
+    )
+    monkeypatch.setattr(update_merge, "acquire_update_lock", lambda: object())
+    monkeypatch.setattr(update_merge, "release_update_lock", lambda _lock: None)
+    monkeypatch.setattr(update_merge, "active_update_tx", lambda: {})
+    monkeypatch.setattr(control, "_quiesce_repo_writers", lambda _reason: [])
+    monkeypatch.setattr(
+        git_ops, "checkout_and_reset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("checkout")),
+    )
+
+    def prepare(strategy, **kwargs):
+        prepares.append((strategy, kwargs))
+        return False, {"error": "stopped", "reason": "stopped"}
+
+    monkeypatch.setattr(git_ops, "prepare_managed_update", prepare)
+    response = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "replace",
+        "confirm_recovery": True,
+        "expected_base_sha": BASE,
+        "expected_target_sha": TARGET,
+        "official_release": "v7.7.0",
+    })))
+
+    assert response.status_code == 409
+    assert _body(response)["reason"] == "stopped"
+    assert plans == [
+        {"fetch": True, "build": False, "official_release": "v7.7.0"},
+        {"fetch": False, "build": False, "official_release": "v7.7.0"},
+    ]
+    assert prepares == [(
+        "replace",
+        {
+            "expected_base_sha": BASE,
+            "expected_target_sha": TARGET,
+            "arm_intent": False,
+            "official_release": "v7.7.0",
+        },
+    )]
+
+
+def test_manual_apply_forwards_official_release_without_mutation(monkeypatch):
+    import supervisor.git_ops as git_ops
+    import supervisor.update_merge as update_merge
+
+    calls = []
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", _recording_plan(calls))
+    monkeypatch.setattr(
+        git_ops, "checkout_and_reset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("checkout")),
+    )
+    monkeypatch.setattr(
+        git_ops, "prepare_managed_update",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("prepare")),
+    )
+
+    response = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "manual",
+        "official_release": " v7.7.0 ",
+    })))
+    bad = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "manual",
+        "official_release": 770,
+    })))
+
+    assert response.status_code == 200
+    assert _body(response)["status"] == "manual"
+    assert _body(response)["merge_plan"]["official_release"] == "v7.7.0"
+    assert calls == [{"fetch": True, "official_release": "v7.7.0"}]
+    assert bad.status_code == 400
+    assert "JSON string" in _body(bad)["error"]
+
+
+def test_invalid_release_string_is_forwarded_and_not_applied(monkeypatch):
+    import supervisor.git_ops as git_ops
+    import supervisor.update_merge as update_merge
+
+    calls = []
+
+    def plan(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "available": False,
+            "kind": "unavailable",
+            "error": "official_release must be a plain vX.Y.Z tag",
+        }
+
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", plan)
+    monkeypatch.setattr(update_merge, "active_update_tx", lambda: {})
+    monkeypatch.setattr(
+        git_ops, "checkout_and_reset",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("checkout")),
+    )
+    monkeypatch.setattr(
+        git_ops, "prepare_managed_update",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("prepare")),
+    )
+    monkeypatch.setattr(
+        control, "_quiesce_repo_writers",
+        lambda _reason: (_ for _ in ()).throw(AssertionError("fence")),
+    )
+
+    preflight = asyncio.run(control.api_update_preflight(_Request({
+        "official_release": "v7.7.0-rc.1",
+    })))
+    apply = asyncio.run(control.api_update_apply(_Request({
+        "strategy": "assisted",
+        "expected_base_sha": BASE,
+        "expected_target_sha": TARGET,
+        "official_release": "refs/ouroboros-managed/tags/v7.7.0",
+    })))
+
+    assert preflight.status_code == 200
+    assert _body(preflight)["merge_plan"]["kind"] == "unavailable"
+    assert apply.status_code == 409
+    assert calls == [
+        {"fetch": True, "official_release": "v7.7.0-rc.1"},
+        {"fetch": True, "build": False, "official_release": "refs/ouroboros-managed/tags/v7.7.0"},
+    ]
+
+
+def test_boot_keeps_recorded_target_and_does_not_reselect():
+    import inspect
+    import supervisor.update_merge as update_merge
+
+    assert "official_release" not in update_merge._ASSISTED_AUTHORITY_FIELDS
+    assert "target_sha" in update_merge._ASSISTED_AUTHORITY_FIELDS
+    assert "target_ref" in update_merge._ASSISTED_AUTHORITY_FIELDS
+    boot = "\n".join(inspect.getsource(fn) for fn in (
+        update_merge.finalize_managed_update_on_boot,
+        update_merge._recover_assisted_on_boot,
+        update_merge._recover_replace_on_boot,
+        update_merge._finalize_pending_boot_smoke,
+    ))
+    assert "resolve_managed_update_target" not in boot
+    assert "official_release" not in boot
+    assert 'tx.get("target_sha")' in inspect.getsource(update_merge._recover_replace_on_boot)
+
+
+def test_preflight_real_request_does_not_turn_invalid_json_into_latest(monkeypatch):
+    from starlette.requests import Request
+    import supervisor.update_merge as update_merge
+
+    calls = []
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", _recording_plan(calls, selected_sha=OLDER))
+
+    def request(raw):
+        async def receive():
+            return {"type": "http.request", "body": raw, "more_body": False}
+        return Request({"type": "http", "method": "POST", "path": "/api/update/preflight"}, receive)
+
+    for raw in (b'{"official_release":', b'null', b'[]'):
+        result = asyncio.run(control.api_update_preflight(request(raw)))
+        assert result.status_code == 400
+    assert calls == []
+    named = asyncio.run(control.api_update_preflight(request(b'{"official_release":"v7.7.0"}')))
+    assert _body(named)["merge_plan"]["target_sha"] == OLDER
+    assert calls == [{"fetch": True, "official_release": "v7.7.0"}]
+    legacy = asyncio.run(control.api_update_preflight(request(b'')))
+    assert _body(legacy)["merge_plan"]["target_sha"] == TARGET
+    assert calls[-1] == {"fetch": True}

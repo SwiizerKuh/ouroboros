@@ -369,11 +369,17 @@ def prepare_managed_update(
     expected_base_sha: str = "",
     expected_target_sha: str = "",
     arm_intent: bool = True,
+    official_release: str = "",
 ) -> Tuple[bool, Dict[str, Any]]:
     """Prepare the explicit hard-reset recovery path against an exact disclosure."""
     strategy = str(strategy or "").strip().lower()
     if strategy != "replace":
         return False, {"error": f"Unsupported recovery strategy: {strategy or 'missing'}"}
+    if not isinstance(official_release, str):
+        return False, {
+            "error": "official_release must be a plain vX.Y.Z tag",
+            "reason": "invalid_official_release",
+        }
     if not expected_base_sha or not expected_target_sha:
         return False, {
             "error": "Recovery requires the exact base and target SHA from a fresh preflight.",
@@ -383,10 +389,15 @@ def prepare_managed_update(
         return False, {"error": "Managed updates are unavailable for this checkout."}
     remote_name, remote_branch, branch_ref = _go()._managed_update_target()
     from ouroboros.update_channels import get_update_channel
+    from supervisor.update_source import _official_release_forward_kwargs
 
     update_channel = get_update_channel()
     target_ref, target_sha, target_error = _go()._resolve_managed_update_target(
-        remote_name, remote_branch, branch_ref, update_channel
+        remote_name,
+        remote_branch,
+        branch_ref,
+        update_channel,
+        **_official_release_forward_kwargs(official_release),
     )
     rc_b, current_branch, _ = _go().git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     rc_h, current_sha, _ = _go().git_capture(["git", "rev-parse", "--verify", "HEAD"])

@@ -111,7 +111,11 @@ def _build_clean_merge_commit(
 
 
 def plan_managed_update_merge(
-    fetch: bool = False, branch: Optional[str] = None, build: bool = False
+    fetch: bool = False,
+    branch: Optional[str] = None,
+    build: bool = False,
+    *,
+    official_release: str = "",
 ) -> Dict[str, Any]:
     """Dry-run the managed update as a REAL 3-way merge in an ISOLATED temp worktree and
     classify the result (P2). NEVER touches the live worktree or index. Returns a
@@ -125,20 +129,29 @@ def plan_managed_update_merge(
     object in the shared DB that survives temp-worktree removal, ready for
     ``apply_managed_merge_update`` to land on the live repo. Dirty local work is used
     only to CLASSIFY conflicts (via the synthetic snapshot); it never enters the built
-    commit — the apply path stashes and restores it (owner decision Q1=C)."""
+    commit — the apply path stashes and restores it (owner decision Q1=C).
+    A non-empty ``official_release`` selects that plain stable tag; a blank value
+    keeps the newest feed. The existing ``BIBLE.md`` check still applies."""
     import shutil
     import tempfile
 
     from ouroboros.update_channels import get_update_channel
     from supervisor.update_merge_policy import classify_conflicts
+    from supervisor.update_source import _official_release_forward_kwargs
+
+    if not isinstance(official_release, str):
+        return {"available": False, "kind": "unavailable",
+                "error": "official_release must be a plain vX.Y.Z tag"}
     branch_dev = branch or _g.BRANCH_DEV
     remote_name, remote_branch, branch_ref = _g._managed_update_target()
     update_channel = get_update_channel()
+    forward = _official_release_forward_kwargs(official_release)
     identity = {
         "remote": remote_name,
         "remote_branch": remote_branch,
         "target_ref": branch_ref,
         "update_channel": update_channel,
+        **forward,
     }
     rc_b, current_branch, branch_error = _g.git_capture(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"]
@@ -177,7 +190,7 @@ def plan_managed_update_merge(
             }
 
     target_ref, target_sha, target_error = _g._resolve_managed_update_target(
-        remote_name, remote_branch, branch_ref, update_channel
+        remote_name, remote_branch, branch_ref, update_channel, **forward
     )
     identity["target_ref"] = target_ref or branch_ref
     if not target_ref or not target_sha:

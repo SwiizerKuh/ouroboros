@@ -21,7 +21,7 @@ import pytest
 from ouroboros import presence_runner
 from ouroboros.gateway import host_service
 from ouroboros.gateway.host_service import create_host_service_app
-from ouroboros.presence_runner import PresenceTurnError, PresenceTurnGate
+from ouroboros.presence_runner import PresenceTurnError, PresenceTurnGate, presence_turn_task_id
 from tests.test_host_service_api import _seed_presence_behavior, _seed_token
 
 TOKEN = "presence-token"
@@ -140,7 +140,9 @@ def test_queued_and_executing_turns_leave_the_default_executor_free(tmp_path, mo
     assert ctx.presence_turns.live() == [] and not any(ctx._inflight.values())
 
 
-def test_retries_join_turns_whose_waiters_were_cancelled_even_at_full_budget(tmp_path):
+@pytest.mark.parametrize("retry_preparation_delay", [0.0, 0.3])
+def test_retries_join_turns_whose_waiters_were_cancelled_even_at_full_budget(
+        tmp_path, monkeypatch, retry_preparation_delay):
     """Cancelled waiters (one executing turn, one queued) leave both turns running with their
     capacity; retries join them although the in-flight budget is full, and each event runs once."""
     calls, entered, release = [], threading.Event(), threading.Event()
@@ -172,8 +174,31 @@ def test_retries_join_turns_whose_waiters_were_cancelled_even_at_full_budget(tmp
 
         refused = await _turn(app, binding_id, "e-5")
         assert refused.status_code == 429, "a NEW event still meets the budget"
+        expected_joins = {presence_turn_task_id(binding_id, event_id) for event_id in ("e-0", "e-2")}
+        joined = set()
+        start_or_join = ctx.presence_turns.start_or_join
+
+        def observe_join(*args, **kwargs):
+            execution, started = start_or_join(*args, **kwargs)
+            if execution is not None and not started:
+                joined.add(execution.turn_id)
+            return execution, started
+
+        monkeypatch.setattr(ctx.presence_turns, "start_or_join", observe_join)
+        admit_presence = host_service._admit_presence
+
+        def delayed_admission(*args, **kwargs):
+            # Exercise preparation slower than the retired 0.2 s guess, off-loop
+            # through the real bounded-read executor; retain actual admission.
+            time.sleep(retry_preparation_delay)
+            return admit_presence(*args, **kwargs)
+
+        monkeypatch.setattr(host_service, "_admit_presence", delayed_admission)
         retries = {event_id: asyncio.create_task(_turn(app, binding_id, event_id)) for event_id in ("e-0", "e-2")}
-        await asyncio.sleep(0.2)
+        # Admission includes real disk reads: an unfinished request has not necessarily
+        # joined. This runner writes no durable result, so releasing before the joins
+        # retires the live executions and turns a late retry into a new execution.
+        await _until(lambda: joined == expected_joins)
         assert not any(retry.done() for retry in retries.values()), "a retry joins; it is never refused"
         assert calls == ["e-0"] and ctx._inflight[BUDGET] == 5
 

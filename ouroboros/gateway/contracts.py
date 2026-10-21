@@ -534,10 +534,13 @@ class UpdateMergePlan(TypedDict, total=False):
     doc_conflict_paths: List[str]
     hot_code_paths: List[str]
     recommended_strategy: Literal["auto_merge", "assisted"]
+    official_release: NotRequired[str]
 
 
 class UpdatePreflightRequest(TypedDict, total=False):
-    """POST /api/update/preflight has an intentionally empty JSON body."""
+    """POST /api/update/preflight. Absent or blank ``official_release`` selects the newest Stable tag."""
+
+    official_release: NotRequired[str]
 
 
 class UpdatePreflightResponse(TypedDict):
@@ -549,6 +552,7 @@ class UpdateApplyRequest(TypedDict):
     expected_base_sha: NotRequired[str]
     expected_target_sha: NotRequired[str]
     confirm_recovery: NotRequired[bool]
+    official_release: NotRequired[str]
 
 
 class UpdateApplySuccessResponse(TypedDict):
@@ -1510,13 +1514,9 @@ __all__ = [
     "ProjectsChangedOutbound",
     "MessageAnnotationOutbound",
     "UpdateMergePlan",
-    "UpdatePreflightRequest",
-    "UpdatePreflightResponse",
-    "UpdateApplyRequest",
-    "UpdateApplySuccessResponse",
-    "UpdateApplyErrorResponse",
-    "UpdateStatusReadyOutbound",
-    "UpdateProgressChangedOutbound",
+    "UpdatePreflightRequest", "UpdatePreflightResponse",
+    "UpdateApplyRequest", "UpdateApplySuccessResponse", "UpdateApplyErrorResponse",
+    "UpdateStatusReadyOutbound", "UpdateProgressChangedOutbound",
     "ProjectCreateRequest",
     "ProjectEntry",
     "ProjectDeleteResponse",

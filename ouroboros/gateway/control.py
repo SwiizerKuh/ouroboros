@@ -370,14 +370,47 @@ def _respawn_workers_after_failed_update() -> None:
         log.warning("update_apply: failed to respawn workers after aborted update", exc_info=True)
 
 
-async def api_update_preflight(_request: Request) -> JSONResponse:
+def _with_official_release(official_release: str, **kwargs: Any) -> Dict[str, Any]:
+    """Pass ``official_release`` only when the caller named one."""
+    if official_release:
+        kwargs["official_release"] = official_release
+    return kwargs
+
+
+async def api_update_preflight(request: Request) -> JSONResponse:
     """Plan the managed update as a REAL 3-way merge (P2). Does NOT touch the live
     worktree/branch/index (it fetches + merges in an isolated temp worktree), so the UI
-    can present the right staged choice (auto / assisted / manual)."""
+    can present the right staged choice (auto / assisted / manual).
+
+    An optional ``official_release`` selects one plain stable tag. An empty body
+    still selects the newest Stable tag.
+    """
     try:
+        from ouroboros.gateway.contracts import UpdatePreflightRequest
+        from ouroboros.gateway.schema import validate_ingress
         from supervisor.update_merge import plan_managed_update_merge
 
-        plan = await asyncio.to_thread(plan_managed_update_merge, fetch=True)
+        try:
+            body = await request.json()
+        except ValueError:
+            if await request.body():
+                return json_error("invalid JSON body", 400)
+            body = {}  # Legacy body-less preflight still means latest feed.
+        if not isinstance(body, dict):
+            return json_error("JSON body must be an object.", 400)
+        schema_errors = validate_ingress(body, UpdatePreflightRequest)
+        if schema_errors:
+            return json_error(
+                f"invalid request body: {schema_errors[0]}", 400,
+                schema_errors=schema_errors[:8],
+            )
+        raw_release = body.get("official_release", "")
+        if not isinstance(raw_release, str):
+            return json_error("official_release must be a plain vX.Y.Z tag", 400)
+        plan = await asyncio.to_thread(
+            plan_managed_update_merge,
+            **_with_official_release(raw_release.strip(), fetch=True),
+        )
         return JSONResponse({"merge_plan": plan})
     except Exception as exc:
         return json_exception(exc)
@@ -1013,6 +1046,7 @@ def _apply_smart_update_fenced(
     *,
     expected_base_sha: str,
     expected_target_sha: str,
+    official_release: str = "",
 ) -> JSONResponse:
     from supervisor.update_merge import (
         acquire_update_lock,
@@ -1021,7 +1055,9 @@ def _apply_smart_update_fenced(
         release_update_lock,
     )
 
-    plan = plan_managed_update_merge(fetch=True, build=False)
+    plan = plan_managed_update_merge(**_with_official_release(
+        official_release, fetch=True, build=False,
+    ))
     kind = str(plan.get("kind") or "")
     if not plan.get("available") or kind not in _KNOWN_UPDATE_PLAN_KINDS:
         return JSONResponse(
@@ -1059,7 +1095,9 @@ def _apply_smart_update_fenced(
         )
         if stash_failure is not None:
             return stash_failure
-        plan2 = plan_managed_update_merge(fetch=False, build=True)
+        plan2 = plan_managed_update_merge(**_with_official_release(
+            official_release, fetch=False, build=True,
+        ))
         if (
             not plan2.get("available")
             or str(plan2.get("kind") or "") not in _KNOWN_UPDATE_PLAN_KINDS
@@ -1117,12 +1155,14 @@ async def _apply_smart_update(
     *,
     expected_base_sha: str,
     expected_target_sha: str,
+    official_release: str = "",
 ) -> JSONResponse:
     return await asyncio.to_thread(
         _apply_smart_update_fenced,
         request,
         expected_base_sha=expected_base_sha,
         expected_target_sha=expected_target_sha,
+        official_release=official_release,
     )
 
 
@@ -1132,6 +1172,7 @@ def _apply_replace_recovery_fenced(
     *,
     expected_base_sha: str,
     expected_target_sha: str,
+    official_release: str = "",
 ) -> JSONResponse:
     import uuid
 
@@ -1150,7 +1191,9 @@ def _apply_replace_recovery_fenced(
         write_update_tx,
     )
 
-    plan = plan_managed_update_merge(fetch=True, build=False)
+    plan = plan_managed_update_merge(**_with_official_release(
+        official_release, fetch=True, build=False,
+    ))
     if (
         str(plan.get("kind") or "") not in (_KNOWN_UPDATE_PLAN_KINDS | {"current"})
         or not _pins_match(plan, expected_base_sha, expected_target_sha)
@@ -1171,7 +1214,9 @@ def _apply_replace_recovery_fenced(
         if blockers:
             return _fence_failure(blockers)
         update_progress.advance("preparing")
-        plan2 = plan_managed_update_merge(fetch=False, build=False)
+        plan2 = plan_managed_update_merge(**_with_official_release(
+            official_release, fetch=False, build=False,
+        ))
         if (
             str(plan2.get("kind") or "") not in (_KNOWN_UPDATE_PLAN_KINDS | {"current"})
             or not _pins_match(plan2, expected_base_sha, expected_target_sha)
@@ -1185,9 +1230,12 @@ def _apply_replace_recovery_fenced(
             )
         ok, payload = prepare_managed_update(
             "replace",
-            expected_base_sha=expected_base_sha,
-            expected_target_sha=expected_target_sha,
-            arm_intent=False,
+            **_with_official_release(
+                official_release,
+                expected_base_sha=expected_base_sha,
+                expected_target_sha=expected_target_sha,
+                arm_intent=False,
+            ),
         )
         if not ok:
             _respawn_workers_after_failed_update()
@@ -1251,12 +1299,14 @@ async def _apply_replace_recovery(
     *,
     expected_base_sha: str,
     expected_target_sha: str,
+    official_release: str = "",
 ) -> JSONResponse:
     return await asyncio.to_thread(
         _apply_replace_recovery_fenced,
         request,
         expected_base_sha=expected_base_sha,
         expected_target_sha=expected_target_sha,
+        official_release=official_release,
     )
 
 
@@ -1282,10 +1332,17 @@ async def api_update_apply(request: Request) -> JSONResponse:
         return json_error(f"unsupported update strategy: {strategy or 'missing'}", 400)
     expected_base_sha = str(body.get("expected_base_sha") or "").strip()
     expected_target_sha = str(body.get("expected_target_sha") or "").strip()
+    raw_release = body.get("official_release", "")
+    if not isinstance(raw_release, str):
+        return json_error("official_release must be a plain vX.Y.Z tag", 400)
+    official_release = raw_release.strip()
     if strategy == "manual":
         from supervisor.update_merge import plan_managed_update_merge
 
-        plan = await asyncio.to_thread(plan_managed_update_merge, fetch=True)
+        plan = await asyncio.to_thread(
+            plan_managed_update_merge,
+            **_with_official_release(official_release, fetch=True),
+        )
         return JSONResponse({"status": "manual", "merge_plan": plan})
     if strategy != "manual":
         from supervisor.update_merge import active_update_tx
@@ -1301,6 +1358,7 @@ async def api_update_apply(request: Request) -> JSONResponse:
             request,
             expected_base_sha=expected_base_sha,
             expected_target_sha=expected_target_sha,
+            official_release=official_release,
         )
     # auto_merge and assisted share one smart flow; the fresh plan, not the
     # caller's guess, decides whether the supervisor can fast-forward/merge or
@@ -1309,6 +1367,7 @@ async def api_update_apply(request: Request) -> JSONResponse:
         request,
         expected_base_sha=expected_base_sha,
         expected_target_sha=expected_target_sha,
+        official_release=official_release,
     )
 
 

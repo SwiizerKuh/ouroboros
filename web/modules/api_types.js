@@ -1428,10 +1428,12 @@
  * @property {string[]=} doc_conflict_paths
  * @property {string[]=} hot_code_paths
  * @property {'auto_merge'|'assisted'=} recommended_strategy
+ * @property {string=} official_release Plain vX.Y.Z tag when the caller named one.
  */
 
 /**
  * @typedef {Object} UpdatePreflightRequest
+ * @property {string=} official_release Optional plain vX.Y.Z tag. Absent or blank selects the newest Stable release.
  */
 
 /**
@@ -1445,6 +1447,7 @@
  * @property {string=} expected_base_sha
  * @property {string=} expected_target_sha
  * @property {boolean=} confirm_recovery
+ * @property {string=} official_release Optional plain vX.Y.Z tag. Repeat the preflight selector; absent selects the newest Stable release.
  */
 
 /**
@@ -1525,7 +1528,7 @@ export const MAX_QUIZ_OPTIONS = 6;
 // REFUSES a longer comment (it is delivered verbatim, never truncated), so
 // the card must not offer to send one.
 export const MAX_DECISION_COMMENT = 2000;
-export const GATEWAY_CONTRACT_VERSION = '7.7.3';
+export const GATEWAY_CONTRACT_VERSION = '7.8.0';
 
 /**
  * @typedef {Object} ChatHistoryPosition

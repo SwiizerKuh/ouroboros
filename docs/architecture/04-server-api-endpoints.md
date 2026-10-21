@@ -101,8 +101,8 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/git/promote` | `gateway.control.api_git_promote` |
 | GET | `/api/update/status` | `gateway.control.api_update_status` |
 | POST | `/api/update/check` | `gateway.control.api_update_check` |
-| POST | `/api/update/preflight` | `gateway.control.api_update_preflight` |
-| POST | `/api/update/apply` | `gateway.control.api_update_apply` |
+| POST | `/api/update/preflight` | `gateway.control.api_update_preflight` (optional plain `official_release` `vX.Y.Z`; omitted or blank keeps the newest Stable tag; a non-string is a 400 and selects nothing) |
+| POST | `/api/update/apply` | `gateway.control.api_update_apply` (repeat that `official_release`; `expected_target_sha` must be the peeled commit of the selection, not merely the newest tip) |
 | GET | `/api/cost-breakdown` | `gateway.history.make_cost_breakdown_endpoint` (the router's import path; the factory body and `_ACCOUNTING_SUMMARY_FIELDS` live in `gateway.cost_breakdown`) |
 | GET | `/api/evolution-data` | `gateway.control.api_evolution_data` |
 | GET | `/api/projects` | `gateway.projects.api_projects_list` |

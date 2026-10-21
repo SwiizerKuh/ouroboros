@@ -344,7 +344,12 @@ def rescue_git_capture(cmd: List[str]) -> Tuple[int, str, str]:
 
 
 def _resolve_managed_update_target(
-    remote_name: str, remote_branch: str, branch_ref: str, update_channel: str
+    remote_name: str,
+    remote_branch: str,
+    branch_ref: str,
+    update_channel: str,
+    *,
+    official_release: str = "",
 ) -> Tuple[str, str, str]:
     return _update_source.resolve_managed_update_target(
         remote_name,
@@ -352,6 +357,7 @@ def _resolve_managed_update_target(
         branch_ref,
         update_channel=update_channel,
         capture=git_capture,
+        **_update_source._official_release_forward_kwargs(official_release),
     )
 
 

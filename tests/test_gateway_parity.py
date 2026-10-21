@@ -403,6 +403,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert re.search(r"@property \{'auto_merge'\|'assisted'\|'manual'\|'replace'\} strategy\b", text)
     assert re.search(r"@property \{string=\} expected_base_sha\b", text)
     assert re.search(r"@property \{string=\} expected_target_sha\b", text)
+    assert len(re.findall(r"@property \{string=\} official_release\b", text)) == 3
     assert re.search(r"@property \{boolean=\} confirm_recovery\b", text)
     assert re.search(r"@property \{'ok'\|'restart_required'\|'assisted_started'\|'manual'\} status\b", text)
     assert re.search(r"@typedef \{Object\} UpdateApplyErrorResponse.*?@property \{string\} error\b", text, re.S)

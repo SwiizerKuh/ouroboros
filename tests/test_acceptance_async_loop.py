@@ -1034,5 +1034,8 @@ def test_cyber_unread_owner_message_still_reaches_same_main(full_loop, monkeypat
     monkeypatch.setattr(loop, "call_llm_with_retry", main)
     result, _usage, trace = f.run()
     assert result == ANSWER and f.model_step == 2
+    # Factory construction can also render pending evidence before the worker
+    # enters execute(). Cyber's final does not wait for that worker.
+    assert f.entered.wait(60), "physical review send did not start"
     assert len(f.review_sends) == 1
     assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
